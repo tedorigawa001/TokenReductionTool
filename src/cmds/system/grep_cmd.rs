@@ -53,8 +53,12 @@ pub fn run(
     let result = exec_capture(&mut rg_cmd)
         .or_else(|_| {
             let mut grep_cmd = resolved_command("grep");
-            // When we fall back to grep, include all args, not just -rnHZ.
-            grep_cmd.args(["-rnHZ", pattern, path]).args(extra_args);
+            // Fall back to plain colon-separated output (`file:line:content`).
+            // We deliberately do NOT pass `-Z`/`--null`: GNU grep treats it as a
+            // NUL separator, but other grep-compatible binaries do not (e.g.
+            // ugrep reads `-Z` as fuzzy matching), which both changes results and
+            // breaks parsing. `parse_match_line` understands the colon format.
+            grep_cmd.args(["-rnH", pattern, path]).args(extra_args);
             exec_capture(&mut grep_cmd)
         })
         .context("grep/rg failed")?;
@@ -160,22 +164,37 @@ pub fn run(
     Ok(exit_code)
 }
 
-/// Parses a single rg/grep match line of the form `file\0line_number:content`.
+/// Parses a single rg/grep match line into `(file, line_number, content)`.
 ///
-/// Requires the underlying command to be invoked with `-0` (rg) or `-Z` (grep)
-/// so the filename is NUL-separated from `line:content`. NUL cannot appear in
-/// file paths, so the parser is unambiguous regardless of:
-///   - content with `:` or `::` (e.g. `ClassRegistry::init(...)`, issue #1436);
-///   - paths with embedded `:` (Windows drive letters, weird filenames like
-///     `badly_named:52:file.txt`).
+/// Two shapes are accepted:
+///   1. NUL-separated `file\0line_number:content` — emitted by `rg -0` (and GNU
+///      `grep -Z`). NUL cannot appear in file paths, so this is unambiguous even
+///      when content or the path contains `:` (e.g. `ClassRegistry::init(...)`,
+///      issue #1436; Windows drive letters).
+///   2. Colon-separated `file:line_number:content` — the universal grep format,
+///      used by the `grep` fallback. Not all grep-compatible binaries honour
+///      `-Z` as a NUL separator (e.g. ugrep treats `-Z` as fuzzy matching), so
+///      the fallback emits plain colons and we parse them here. The first colon
+///      ends the file name; this misreads the rare path that itself contains
+///      `:`, but that is far better than dropping every match.
 ///
-/// Returns `None` for lines that do not match the expected shape (e.g. rg
-/// `-A`/`-B` context lines that use `-` as separator).
+/// Returns `None` for lines that do not match either shape (e.g. rg `-A`/`-B`
+/// context lines that use `-` as separator).
 fn parse_match_line(line: &str) -> Option<(String, usize, &str)> {
     lazy_static::lazy_static! {
-        static ref MATCH_LINE_RE: Regex = Regex::new(r"^([^\x00]+)\x00(\d+):(.*)$").unwrap();
+        // NUL-separated (preferred, unambiguous).
+        static ref NUL_LINE_RE: Regex = Regex::new(r"^([^\x00]+)\x00(\d+):(.*)$").unwrap();
+        // Colon-separated `file:line:content` (grep fallback). `[^:]+` stops the
+        // file at the first colon; `(\d+):` anchors the line number so content
+        // may still contain colons.
+        static ref COLON_LINE_RE: Regex = Regex::new(r"^([^:\x00]+):(\d+):(.*)$").unwrap();
     }
-    MATCH_LINE_RE.captures(line).and_then(|caps| {
+    let re = if line.contains('\x00') {
+        &*NUL_LINE_RE
+    } else {
+        &*COLON_LINE_RE
+    };
+    re.captures(line).and_then(|caps| {
         let (_, [file, line_num, content]) = caps.extract();
         let line_num: usize = line_num.parse().ok()?;
         Some((file.to_string(), line_num, content))
@@ -408,7 +427,8 @@ mod tests {
     }
 
     // --- issue #1436: parse_match_line robustness ---
-    // Input shape is `file\0line:content` (rg --null / grep -Z).
+    // Accepts NUL-separated `file\0line:content` (rg --null / GNU grep -Z) and
+    // colon-separated `file:line:content` (the grep fallback).
 
     #[test]
     fn test_parse_match_line_simple() {
@@ -467,12 +487,35 @@ mod tests {
         assert_eq!(content, "debug: counter is :42: now");
     }
 
+    // Colon-separated `file:line:content` — the `grep` fallback format (used
+    // when `rg` is unavailable, or when the system `grep` doesn't honour `-Z`
+    // as a NUL separator, e.g. ugrep). Must parse, otherwise every match is
+    // silently dropped and the output reads "N matches in 0 files".
+    #[test]
+    fn test_parse_match_line_colon_fallback() {
+        let line = "src/core/runner.rs:117:    let filtered = catch_unwind(|| {";
+        let (file, line_num, content) = parse_match_line(line).unwrap();
+        assert_eq!(file, "src/core/runner.rs");
+        assert_eq!(line_num, 117);
+        assert_eq!(content, "    let filtered = catch_unwind(|| {");
+    }
+
+    // Colon format: content containing further colons (e.g. `::`) stays with the
+    // content; only the first two colons (file, line) are structural.
+    #[test]
+    fn test_parse_match_line_colon_content_with_double_colon() {
+        let line = "registry.rs:81:ClassRegistry::init('x');";
+        let (file, line_num, content) = parse_match_line(line).unwrap();
+        assert_eq!(file, "registry.rs");
+        assert_eq!(line_num, 81);
+        assert_eq!(content, "ClassRegistry::init('x');");
+    }
+
     #[test]
     fn test_parse_match_line_malformed_returns_none() {
-        // No NUL separator (e.g. rg/grep invoked without --null/-Z, or a
-        // context line written with `-`).
-        assert!(parse_match_line("file.rs:1:content").is_none());
         assert!(parse_match_line("not a match line").is_none());
+        // Colon line with a non-numeric "line number".
+        assert!(parse_match_line("file.rs:abc:content").is_none());
         // Missing line number after NUL
         assert!(parse_match_line("file.rs\x00fn foo()").is_none());
         // Empty
