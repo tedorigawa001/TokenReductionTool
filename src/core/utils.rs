@@ -339,19 +339,7 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf> {
 pub fn resolved_command(name: &str) -> Command {
     match resolve_binary(name) {
         Ok(path) => Command::new(path),
-        Err(e) => {
-            // On Windows, resolution failure likely means a .CMD/.BAT wrapper
-            // wasn't found — always warn so users have a signal.
-            // On Unix, this is less common; only log in debug builds.
-            if cfg!(any(target_os = "windows", debug_assertions)) {
-                eprintln!(
-                    "bdo: Failed to resolve '{}' via PATH, falling back to direct exec: {}",
-                    name, e
-                );
-            }
-
-            Command::new(name)
-        }
+        Err(_) => Command::new(name),
     }
 }
 
@@ -360,7 +348,10 @@ pub fn resolved_command(name: &str) -> Command {
 /// a missing tool the same way (and always names which tool).
 pub fn spawn_error(tool: &str, err: &std::io::Error) -> String {
     if err.kind() == std::io::ErrorKind::NotFound {
-        format!("'{}' was not found in PATH — install it and try again", tool)
+        format!(
+            "'{}' was not found in PATH — install it and try again",
+            tool
+        )
     } else {
         format!("could not run '{}': {}", tool, err)
     }
@@ -432,7 +423,10 @@ mod tests {
         let e = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
         let msg = spawn_error("psql", &e);
         assert!(msg.contains("'psql'"), "{msg}");
-        assert!(!msg.contains("not found in PATH"), "non-NotFound must differ: {msg}");
+        assert!(
+            !msg.contains("not found in PATH"),
+            "non-NotFound must differ: {msg}"
+        );
     }
 
     #[test]
