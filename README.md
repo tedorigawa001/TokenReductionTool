@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="BDO (Bushido) Logo" width="600">
+  <img src="logo.svg" alt="BDO (Bushido) Logo" width="600">
 </p>
 
 <p align="center">
