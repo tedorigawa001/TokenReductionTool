@@ -311,6 +311,7 @@ const RUST_HANDLED_COMMANDS: &[&str] = &[
     "proxy",
     "verify",
     "learn",
+    "map",
 ];
 
 fn compile_filter(name: String, def: TomlFilterDef) -> Result<CompiledFilter, String> {

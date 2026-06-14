@@ -167,6 +167,53 @@ fn first_code_brace(line: &str, rust: bool) -> Option<usize> {
     None
 }
 
+/// The code portion of a line — everything before a `//` or `/*` comment that
+/// is not inside a string/char literal. Used to detect a statement-ending `;`
+/// even when a trailing comment follows it (`const N = 1; // note`).
+fn code_part(line: &str, rust: bool) -> &str {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    let mut in_str: Option<u8> = None;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if let Some(q) = in_str {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                in_str = None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'"' => in_str = Some(c),
+            b'\'' if rust && !is_char_literal_start(bytes, i) => {}
+            b'\'' => in_str = Some(c),
+            b'/' if matches!(bytes.get(i + 1), Some(&b'/') | Some(&b'*')) => return &line[..i],
+            _ => {}
+        }
+        i += 1;
+    }
+    line
+}
+
+/// Fold a (possibly multi-line) declaration header into a single tidy line:
+/// collapse whitespace runs and drop the spaces that line-joining introduces
+/// around `(` `)` `,` `;`. Used by map mode so each declaration is exactly one
+/// line. `pub fn multi(\n a: T,\n) -> R` → `pub fn multi(a: T) -> R`.
+fn compact_signature(s: &str) -> String {
+    let mut out = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    out = out
+        .replace("( ", "(")
+        .replace(" )", ")")
+        .replace(" ,", ",")
+        .replace(",)", ")")
+        .replace(" ;", ";");
+    out
+}
+
 fn outline_braces(content: &str, rust: bool, collapse_all: bool) -> String {
     let mut out = String::new();
     let mut in_block_comment = false;
@@ -222,9 +269,15 @@ fn outline_braces(content: &str, rust: bool, collapse_all: bool) -> String {
             let brace_at = first_code_brace(line, rust).unwrap_or(line.len());
 
             if is_fn {
-                // Function/method: keep the signature, elide the body.
-                let sig = line[..brace_at].trim_end();
-                out.push_str(sig);
+                // Function/method: keep the signature, elide the body. In map
+                // mode fold the whole (possibly multi-line) header into one line;
+                // otherwise keep just this line's portion up to the `{`.
+                if collapse_all {
+                    let head = header.split('{').next().unwrap_or(&header);
+                    out.push_str(&compact_signature(head));
+                } else {
+                    out.push_str(line[..brace_at].trim_end());
+                }
                 out.push_str(" { … }\n");
                 let depth_before = depth;
                 depth += delta;
@@ -242,6 +295,25 @@ fn outline_braces(content: &str, rust: bool, collapse_all: bool) -> String {
                 depth += delta;
             }
             header.clear();
+        } else if collapse_all {
+            // Map mode: don't print continuation lines individually — fold them
+            // into `header` and emit a single normalized line only when the
+            // declaration completes with `;` (a `{` is handled by the branch
+            // above). This keeps "1 declaration = 1 line". Detect the `;` on the
+            // code portion so a trailing `// comment` doesn't merge declarations.
+            depth += delta;
+            let code = code_part(trimmed, rust).trim_end();
+            if !code.is_empty() {
+                header.push_str(code);
+                header.push(' ');
+                if code.ends_with(';') {
+                    out.push_str(&compact_signature(&header));
+                    out.push('\n');
+                    header.clear();
+                } else if code.ends_with('}') {
+                    header.clear();
+                }
+            }
         } else {
             // No new block on this line.
             out.push_str(line);
@@ -373,6 +445,43 @@ pub fn free() -> u32 {
         // Doc comments and attributes are dropped in map mode.
         assert!(!o.contains("a doc comment"), "docs dropped: {o}");
         assert!(!o.contains("#[derive"), "attrs dropped: {o}");
+    }
+
+    #[test]
+    fn test_signatures_multiline_signature_folded_to_one_line() {
+        let src = "\
+pub fn multi(
+    a: T,
+    b: U,
+) -> Result<StreamResult> {
+    work();
+}
+";
+        let o = signatures(src, &Language::Rust).unwrap();
+        // The whole signature is exactly one line (no leftover param lines).
+        assert_eq!(o.trim(), "pub fn multi(a: T, b: U) -> Result<StreamResult> { … }");
+        assert_eq!(o.lines().count(), 1, "must be a single line: {o:?}");
+    }
+
+    // A top-level `const …; // comment` must not merge with the next decl: the
+    // statement-ending `;` is detected on the code portion, ignoring the trailing
+    // comment.
+    #[test]
+    fn test_signatures_trailing_comment_does_not_merge() {
+        let src = "\
+pub const RAW_CAP: usize = 10_485_760; // 10 MiB
+pub fn run() -> u32 {
+    1
+}
+";
+        let o = signatures(src, &Language::Rust).unwrap();
+        assert!(o.contains("pub const RAW_CAP: usize = 10_485_760;"), "{o}");
+        assert!(o.contains("pub fn run() -> u32 { … }"), "{o}");
+        // Two separate lines, not one merged line.
+        assert!(
+            !o.contains("RAW_CAP: usize = 10_485_760; pub fn run"),
+            "decls must not merge: {o}"
+        );
     }
 
     #[test]
