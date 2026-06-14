@@ -1,7 +1,7 @@
 use crate::core::stream::exec_capture;
 use crate::core::tracking;
 use crate::core::utils::resolved_command;
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 /// Compact wget - strips progress bars, shows only result
 pub fn run(url: &str, args: &[String], verbose: u8) -> Result<i32> {
@@ -22,7 +22,7 @@ pub fn run(url: &str, args: &[String], verbose: u8) -> Result<i32> {
 
     let mut cmd = resolved_command("wget");
     cmd.args(&cmd_args);
-    let result = exec_capture(&mut cmd).context("Failed to run wget")?;
+    let result = exec_capture(&mut cmd)?;
 
     let raw_output = format!("{}\n{}", result.stderr, result.stdout);
 
@@ -64,7 +64,7 @@ pub fn run_stdout(url: &str, args: &[String], verbose: u8) -> Result<i32> {
 
     let mut cmd = resolved_command("wget");
     cmd.args(&cmd_args);
-    let result = exec_capture(&mut cmd).context("Failed to run wget")?;
+    let result = exec_capture(&mut cmd)?;
 
     if result.success() {
         let lines: Vec<&str> = result.stdout.lines().collect();

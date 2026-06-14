@@ -1,6 +1,6 @@
 //! Shared command execution skeleton for filter modules.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::process::Command;
 
 use crate::core::stream::{self, FilterMode, StdinMode, StreamFilter};
@@ -74,7 +74,6 @@ pub enum RunMode<'a> {
 
 fn run_captured_filter<F>(
     mut cmd: Command,
-    tool_name: &str,
     cmd_label: &str,
     filter_fn: F,
     opts: RunOptions<'_>,
@@ -88,8 +87,9 @@ where
     } else {
         StdinMode::Null
     };
-    let result = stream::run_streaming(&mut cmd, stdin_mode, FilterMode::CaptureOnly)
-        .with_context(|| format!("Failed to run {}", tool_name))?;
+    // run_streaming already reports a clear, tool-named error (e.g. "'git' was
+    // not found in PATH"), so no extra "Failed to run X" wrapper is needed.
+    let result = stream::run_streaming(&mut cmd, stdin_mode, FilterMode::CaptureOnly)?;
 
     let exit_code = result.exit_code;
     let raw = &result.raw;
@@ -160,7 +160,6 @@ pub fn run(
     match mode {
         RunMode::Filtered(filter_fn) => run_captured_filter(
             cmd,
-            tool_name,
             &cmd_label,
             move |text, _| filter_fn(text),
             opts,
@@ -168,7 +167,6 @@ pub fn run(
         ),
         RunMode::FilteredWithExit(filter_fn) => run_captured_filter(
             cmd,
-            tool_name,
             &cmd_label,
             move |text, exit_code| filter_fn(text, exit_code),
             opts,
@@ -176,8 +174,7 @@ pub fn run(
         ),
         RunMode::Streamed(filter) => {
             let result =
-                stream::run_streaming(&mut cmd, StdinMode::Null, FilterMode::Streaming(filter))
-                    .with_context(|| format!("Failed to run {}", tool_name))?;
+                stream::run_streaming(&mut cmd, StdinMode::Null, FilterMode::Streaming(filter))?;
 
             if let Some(label) = opts.tee_label {
                 if let Some(hint) =
@@ -197,8 +194,7 @@ pub fn run(
         }
         RunMode::Passthrough => {
             let result =
-                stream::run_streaming(&mut cmd, StdinMode::Inherit, FilterMode::Passthrough)
-                    .with_context(|| format!("Failed to run {}", tool_name))?;
+                stream::run_streaming(&mut cmd, StdinMode::Inherit, FilterMode::Passthrough)?;
 
             timer.track_passthrough(&cmd_label, &format!("bdo {} (passthrough)", cmd_label));
             Ok(result.exit_code)

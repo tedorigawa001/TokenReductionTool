@@ -244,11 +244,17 @@ pub fn status_to_exit_code(status: std::process::ExitStatus) -> i32 {
 // ISSUE #897: ChildGuard RAII prevents zombie processes that caused kernel panic
 pub const RAW_CAP: usize = 10_485_760; // 10 MiB
 
+/// Name of the program a `Command` will launch, for user-facing error messages.
+fn program_name(cmd: &Command) -> String {
+    cmd.get_program().to_string_lossy().into_owned()
+}
+
 pub fn run_streaming(
     cmd: &mut Command,
     stdin_mode: StdinMode,
     stdout_mode: FilterMode<'_>,
 ) -> Result<StreamResult> {
+    let prog = program_name(cmd);
     if matches!(stdout_mode, FilterMode::Passthrough) {
         match &stdin_mode {
             StdinMode::Inherit => {
@@ -260,7 +266,9 @@ pub fn run_streaming(
         };
         cmd.stdout(Stdio::inherit());
         cmd.stderr(Stdio::inherit());
-        let status = cmd.status().context("Failed to spawn process")?;
+        let status = cmd
+            .status()
+            .map_err(|e| anyhow::anyhow!(crate::core::utils::spawn_error(&prog, &e)))?;
         return Ok(StreamResult {
             exit_code: status_to_exit_code(status),
             raw: String::new(),
@@ -290,7 +298,10 @@ pub fn run_streaming(
 
     let is_streaming = matches!(stdout_mode, FilterMode::Streaming(_));
 
-    let mut child = ChildGuard(cmd.spawn().context("Failed to spawn process")?);
+    let mut child = ChildGuard(
+        cmd.spawn()
+            .map_err(|e| anyhow::anyhow!(crate::core::utils::spawn_error(&prog, &e)))?,
+    );
 
     let stdin_thread: Option<std::thread::JoinHandle<()>> = match stdin_mode {
         StdinMode::Filter(mut filter) => {
@@ -569,7 +580,10 @@ impl CaptureResult {
 
 pub fn exec_capture(cmd: &mut Command) -> Result<CaptureResult> {
     cmd.stdin(Stdio::null());
-    let output = cmd.output().context("Failed to execute command")?;
+    let prog = program_name(cmd);
+    let output = cmd
+        .output()
+        .map_err(|e| anyhow::anyhow!(crate::core::utils::spawn_error(&prog, &e)))?;
     Ok(CaptureResult {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),

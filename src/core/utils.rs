@@ -355,6 +355,17 @@ pub fn resolved_command(name: &str) -> Command {
     }
 }
 
+/// Uniform, user-facing message for a proxied tool that couldn't be launched —
+/// most often because it isn't installed. Centralised so every command reports
+/// a missing tool the same way (and always names which tool).
+pub fn spawn_error(tool: &str, err: &std::io::Error) -> String {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        format!("'{}' was not found in PATH — install it and try again", tool)
+    } else {
+        format!("could not run '{}': {}", tool, err)
+    }
+}
+
 /// Check if a tool exists on PATH (PATHEXT-aware on Windows).
 ///
 /// Replaces manual `Command::new("which").arg(tool)` checks that fail on Windows.
@@ -405,6 +416,23 @@ mod tests {
     #[test]
     fn test_truncate_short_string() {
         assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_spawn_error_not_found_names_tool_and_hints_install() {
+        let e = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let msg = spawn_error("wget", &e);
+        assert!(msg.contains("'wget'"), "must name the tool: {msg}");
+        assert!(msg.contains("not found in PATH"), "{msg}");
+        assert!(msg.contains("install"), "should hint install: {msg}");
+    }
+
+    #[test]
+    fn test_spawn_error_other_error_is_distinct() {
+        let e = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let msg = spawn_error("psql", &e);
+        assert!(msg.contains("'psql'"), "{msg}");
+        assert!(!msg.contains("not found in PATH"), "non-NotFound must differ: {msg}");
     }
 
     #[test]

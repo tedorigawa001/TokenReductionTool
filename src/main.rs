@@ -1255,7 +1255,7 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
             Err(e) => {
                 // Command not found — same behaviour as no-TOML path
                 core::tracking::record_parse_failure_silent(&raw_command, &error_message, false);
-                eprintln!("[bdo: {}]", e);
+                eprintln!("bdo: {}", core::utils::spawn_error(&args[0], &e));
                 Ok(127)
             }
         }
@@ -1279,7 +1279,7 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
             Err(e) => {
                 core::tracking::record_parse_failure_silent(&raw_command, &error_message, false);
                 // Command not found or other OS error — single message, no duplicate Clap error
-                eprintln!("[bdo: {}]", e);
+                eprintln!("bdo: {}", core::utils::spawn_error(&args[0], &e));
                 Ok(127)
             }
         }
@@ -2375,7 +2375,7 @@ fn run_cli() -> Result<i32> {
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
                     .spawn()
-                    .context(format!("Failed to execute command: {}", cmd_name))?,
+                    .map_err(|e| anyhow::anyhow!(core::utils::spawn_error(&cmd_name, &e)))?,
             ));
 
             // Store child PID for signal handler before anything can fail
