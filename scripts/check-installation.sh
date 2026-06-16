@@ -111,18 +111,34 @@ fi
 echo ""
 
 # Check 6: Auto-rewrite hook
+# `bdo init` registers a native PreToolUse hook in settings.json that runs
+# `bdo hook claude` (no separate shell script). Older installs used a
+# `rtk-rewrite.sh` script — we detect that too and recommend migrating.
 echo "6. Checking auto-rewrite hook (optional but recommended)..."
-if [ -f "$HOME/.claude/hooks/rtk-rewrite.sh" ]; then
-    echo -e "   ${GREEN}✅${NC} Hook script installed"
-    if [ -f "$HOME/.claude/settings.json" ] && grep -q "rtk-rewrite.sh" "$HOME/.claude/settings.json"; then
-        echo -e "   ${GREEN}✅${NC} Hook enabled in settings.json"
-    else
-        echo -e "   ${YELLOW}⚠️${NC}  Hook script exists but not enabled in settings.json"
-        echo "      See README.md 'Auto-Rewrite Hook' section"
+HOOK_FOUND=false
+for settings in "$HOME/.claude/settings.json" "$HOME/.claude/settings.local.json"; do
+    [ -f "$settings" ] || continue
+    if grep -q "bdo hook claude" "$settings"; then
+        echo -e "   ${GREEN}✅${NC} Native hook enabled ($(basename "$settings"): bdo hook claude)"
+        HOOK_FOUND=true
+        break
+    elif grep -q "rtk-rewrite.sh" "$settings"; then
+        echo -e "   ${YELLOW}⚠️${NC}  Legacy rtk-rewrite.sh hook found in $(basename "$settings")"
+        echo "      Migrate to the native hook: bdo init --global"
+        HOOK_FOUND=true
+        break
     fi
-else
-    echo -e "   ${YELLOW}⚠️${NC}  Auto-rewrite hook not installed (optional)"
-    echo "      Install: cp .claude/hooks/rtk-rewrite.sh ~/.claude/hooks/"
+done
+
+if [ "$HOOK_FOUND" = false ]; then
+    # Legacy script left on disk but not wired into settings.json.
+    if [ -f "$HOME/.claude/hooks/rtk-rewrite.sh" ]; then
+        echo -e "   ${YELLOW}⚠️${NC}  Legacy hook script present but not enabled in settings.json"
+        echo "      Install the native hook: bdo init --global"
+    else
+        echo -e "   ${YELLOW}⚠️${NC}  Auto-rewrite hook not installed (optional)"
+        echo "      Install: bdo init --global"
+    fi
 fi
 echo ""
 
