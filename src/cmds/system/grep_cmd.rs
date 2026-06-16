@@ -239,6 +239,8 @@ fn has_format_flag(extra_args: &[String]) -> bool {
                 | "--files-without-match"
                 | "-o"
                 | "--only-matching"
+                | "-h"
+                | "--no-filename"
                 | "-Z"
                 | "--null"
         )
@@ -451,6 +453,14 @@ mod tests {
     fn test_format_flag_detects_only_matching() {
         assert!(has_format_flag(&["-o".to_string()]));
         assert!(has_format_flag(&["--only-matching".to_string()]));
+    }
+
+    // grep's `-h` (--no-filename) drops the file column that bdo groups by, so it
+    // must pass through as raw output rather than be regrouped.
+    #[test]
+    fn test_format_flag_detects_no_filename() {
+        assert!(has_format_flag(&["-h".to_string()]));
+        assert!(has_format_flag(&["--no-filename".to_string()]));
     }
 
     #[test]

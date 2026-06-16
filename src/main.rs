@@ -308,6 +308,13 @@ enum Commands {
     },
 
     /// Compact grep - strips whitespace, truncates, groups by file
+    // `-h` is intentionally NOT bound to help here: grep/ripgrep use `-h`
+    // (--no-filename). We disable clap's auto `-h`, bind it to `no_filename`,
+    // and forward it to the underlying grep/rg (which keeps bdo's recursive
+    // search). `--help` still prints bdo's help. Short flags that collide with
+    // common grep/ripgrep options (`-l`, `-m`) are left unbound so they pass
+    // through; bdo's own options keep their long forms (`--max-len`, `--max`).
+    #[command(disable_help_flag = true)]
     Grep {
         /// Pattern to search
         pattern: String,
@@ -315,10 +322,10 @@ enum Commands {
         #[arg(default_value = ".")]
         path: String,
         /// Max line length
-        #[arg(short = 'l', long, default_value = "80")]
+        #[arg(long, default_value = "80")]
         max_len: usize,
         /// Max results to show
-        #[arg(short, long, default_value = "200")]
+        #[arg(long, default_value = "200")]
         max: usize,
         /// Show only match context (not full line)
         #[arg(long)]
@@ -329,6 +336,12 @@ enum Commands {
         /// Show line numbers (always on, accepted for grep/rg compatibility)
         #[arg(short = 'n', long)]
         line_numbers: bool,
+        /// Suppress filenames (grep/rg -h --no-filename); forwarded to the search
+        #[arg(short = 'h', long = "no-filename")]
+        no_filename: bool,
+        /// Print help (use --help; `-h` is grep's --no-filename, not help)
+        #[arg(long, action = clap::ArgAction::Help)]
+        help: Option<bool>,
         /// Extra ripgrep arguments (e.g., -i, -A 3, -w, --glob)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         extra_args: Vec<String>,
@@ -1819,17 +1832,27 @@ fn run_cli() -> Result<i32> {
             context_only,
             file_type,
             line_numbers: _, // no-op: line numbers always enabled in grep_cmd::run
-            extra_args,
-        } => grep_cmd::run(
-            &pattern,
-            &path,
-            max_len,
-            max,
-            context_only,
-            file_type.as_deref(),
-            &extra_args,
-            cli.verbose,
-        )?,
+            no_filename,
+            help: _, // ArgAction::Help handles --help; field is unused
+            mut extra_args,
+        } => {
+            // `-h`/`--no-filename` is parsed as a flag (so it works in any
+            // position, not just trailing), then re-injected into extra_args so
+            // grep_cmd forwards it to grep/rg and passes the output through.
+            if no_filename {
+                extra_args.insert(0, "--no-filename".to_string());
+            }
+            grep_cmd::run(
+                &pattern,
+                &path,
+                max_len,
+                max,
+                context_only,
+                file_type.as_deref(),
+                &extra_args,
+                cli.verbose,
+            )?
+        }
 
         Commands::Init {
             global,
@@ -2769,6 +2792,38 @@ mod tests {
         match Cli::try_parse_from(["rtk", "--help"]) {
             Err(e) => assert_eq!(e.kind(), ErrorKind::DisplayHelp),
             Ok(_) => panic!("Expected DisplayHelp error"),
+        }
+    }
+
+    // `bdo grep -h` must NOT trigger clap help: `-h` is grep/ripgrep's
+    // --no-filename. It is parsed as the `no_filename` flag (valid in any
+    // position) and later re-injected for passthrough. `--help` still prints
+    // bdo's help (action = Help on the long-only `help` field).
+    #[test]
+    fn test_grep_dash_h_is_no_filename_not_help() {
+        match Cli::try_parse_from(["bdo", "grep", "-h", "pattern", "src"]) {
+            Ok(cli) => match cli.command {
+                Commands::Grep {
+                    no_filename,
+                    pattern,
+                    path,
+                    ..
+                } => {
+                    assert!(no_filename, "-h should set no_filename");
+                    assert_eq!(pattern, "pattern");
+                    assert_eq!(path, "src");
+                }
+                other => panic!("expected Grep command, got {other:?}"),
+            },
+            Err(e) => panic!("`grep -h` should parse, not error with {:?}", e.kind()),
+        }
+    }
+
+    #[test]
+    fn test_grep_double_dash_help_is_display_help() {
+        match Cli::try_parse_from(["bdo", "grep", "--help"]) {
+            Err(e) => assert_eq!(e.kind(), ErrorKind::DisplayHelp),
+            Ok(_) => panic!("Expected DisplayHelp error for `grep --help`"),
         }
     }
 
