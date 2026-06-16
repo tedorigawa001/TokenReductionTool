@@ -12,7 +12,8 @@
 //!     any other block (`struct`/`enum`/`impl`/`trait`/`mod`/`class` …) is kept
 //!     and we recurse into it, so nested fields and signatures survive.
 //!   * Python: indentation-based — `def`/`class` headers and decorators are
-//!     kept, indented bodies are elided.
+//!     kept, indented bodies are elided and marked with a trailing ` …`
+//!     (e.g. `def foo(self): …`), the analogue of `{ … }`.
 //!   * Anything else returns `None` so the caller can fall back gracefully.
 //!
 //! It is intentionally conservative: when in doubt it keeps a line rather than
@@ -335,6 +336,47 @@ fn outline_braces(content: &str, rust: bool, collapse_all: bool) -> String {
     collapse_blank_runs(&out)
 }
 
+/// Scan `line` for a Python header-terminating colon, starting from bracket
+/// `depth`. Returns the bracket depth at end of line and, if present, the byte
+/// index of a `:` seen at depth 0 (outside string literals, before a `#`
+/// comment). Threading `depth` across lines lets a signature span several
+/// lines: the colon that ends `def f(\n a,\n) -> R:` is only reachable once the
+/// parentheses balance.
+fn scan_header_colon(line: &str, mut depth: i32) -> (i32, Option<usize>) {
+    let bytes = line.as_bytes();
+    let mut in_str: Option<u8> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if let Some(q) = in_str {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                in_str = None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'"' | b'\'' => in_str = Some(c),
+            b'#' => break, // inline comment: the body colon (if any) precedes it
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b':' if depth == 0 => return (depth, Some(i)),
+            _ => {}
+        }
+        i += 1;
+    }
+    (depth, None)
+}
+
+/// Is `trimmed` the start of a `def`/`async def` header?
+fn is_def_header(trimmed: &str) -> bool {
+    trimmed.starts_with("def ") || trimmed.starts_with("async def ")
+}
+
 fn outline_python(content: &str, collapse_all: bool) -> String {
     let mut out = String::new();
     // When `Some(n)`, we are inside the body of a `def`/`class` whose header was
@@ -342,8 +384,45 @@ fn outline_python(content: &str, collapse_all: bool) -> String {
     let mut body_indent: Option<usize> = None;
     let mut pending_decorators: Vec<String> = Vec::new();
 
+    // A header whose terminating colon has not been seen yet (multi-line
+    // signature). We fold its lines into one compact declaration.
+    struct PendingHeader {
+        indent: usize,
+        parts: String,
+        depth: i32,
+        elide: bool,
+    }
+    let mut pending: Option<PendingHeader> = None;
+
     for line in content.lines() {
         let trimmed = line.trim_start();
+
+        // Mid multi-line signature: keep folding until the header colon appears.
+        if let Some(mut h) = pending.take() {
+            let (depth, colon) = scan_header_colon(line, h.depth);
+            let seg = match colon {
+                Some(c) => line[..=c].trim(),
+                None => trimmed.trim_end(),
+            };
+            if !seg.is_empty() {
+                h.parts.push(' ');
+                h.parts.push_str(seg);
+            }
+            if colon.is_some() {
+                out.push_str(&" ".repeat(h.indent));
+                out.push_str(&compact_signature(&h.parts));
+                if h.elide {
+                    out.push_str(" …");
+                }
+                out.push('\n');
+                body_indent = Some(h.indent);
+            } else {
+                h.depth = depth;
+                pending = Some(h);
+            }
+            continue;
+        }
+
         if trimmed.is_empty() {
             continue;
         }
@@ -362,7 +441,7 @@ fn outline_python(content: &str, collapse_all: bool) -> String {
             continue;
         }
 
-        if trimmed.starts_with("def ") || trimmed.starts_with("class ") {
+        if is_def_header(trimmed) || trimmed.starts_with("class ") {
             // In `collapse_all` (map) mode, drop nested defs/methods — keep only
             // the outermost def/class so the map stays a bird's-eye view.
             if collapse_all && body_indent.is_some() {
@@ -373,9 +452,32 @@ fn outline_python(content: &str, collapse_all: bool) -> String {
                 out.push_str(&d);
                 out.push('\n');
             }
-            out.push_str(line);
-            out.push('\n');
-            body_indent = Some(indent);
+            // A `def`'s body is always elided → mark it with ` …`. A `class`
+            // body holds methods we recurse into in outline mode (no marker),
+            // but in map mode it too collapses to a single ` …` line.
+            let elide = is_def_header(trimmed) || collapse_all;
+            let (depth, colon) = scan_header_colon(line, 0);
+            match colon {
+                // Single-line header: keep the signature up to the colon, drop
+                // any inline one-liner body / trailing comment, add the marker.
+                Some(c) => {
+                    out.push_str(line[..=c].trim_end());
+                    if elide {
+                        out.push_str(" …");
+                    }
+                    out.push('\n');
+                    body_indent = Some(indent);
+                }
+                // Signature continues on later lines: start folding it.
+                None => {
+                    pending = Some(PendingHeader {
+                        indent,
+                        parts: trimmed.trim_end().to_string(),
+                        depth,
+                        elide,
+                    });
+                }
+            }
             continue;
         }
 
@@ -705,6 +807,96 @@ class Config:
         assert!(o.contains("@property"), "method decorator kept: {o}");
         assert!(o.contains("def ready(self):"), "{o}");
         assert!(!o.contains("return True"), "body dropped: {o}");
+    }
+
+    // Each kept `def` gets a trailing ` …` body-elision marker (the Python
+    // analogue of `{ … }`); `class` headers do not, since outline mode recurses
+    // into them to show their methods.
+    #[test]
+    fn test_python_def_body_elision_marker() {
+        let src = "\
+class Greeter:
+    def greet(self, name: str) -> str:
+        return f\"hi {name}\"
+
+
+def top_level():
+    return 42
+";
+        let o = outline(src, &Language::Python).unwrap();
+        assert!(o.contains("def greet(self, name: str) -> str: …"), "{o}");
+        assert!(o.contains("def top_level(): …"), "{o}");
+        // The class header (whose methods we recurse into) has no marker.
+        assert!(o.contains("class Greeter:\n"), "no marker on class: {o}");
+        assert!(!o.contains("class Greeter: …"), "{o}");
+    }
+
+    // A one-liner body (`def f(): work()`) and a trailing comment are dropped;
+    // only the signature up to the header colon remains, plus the marker.
+    #[test]
+    fn test_python_one_liner_and_comment_elided() {
+        let src = "\
+def stub(): ...
+def add(a, b):  # returns the sum
+    return a + b
+def has_colon(x=\"a:b\"):
+    return x
+";
+        let o = outline(src, &Language::Python).unwrap();
+        assert!(o.contains("def stub(): …"), "inline body elided: {o}");
+        assert!(o.contains("def add(a, b): …"), "comment dropped: {o}");
+        assert!(!o.contains("returns the sum"), "comment dropped: {o}");
+        // A `:` inside a string default must not be mistaken for the header colon.
+        assert!(o.contains("def has_colon(x=\"a:b\"): …"), "string colon ignored: {o}");
+    }
+
+    // In map mode a class collapses too: `class C: …` with its methods dropped.
+    #[test]
+    fn test_python_map_class_gets_marker() {
+        let src = "\
+class Config:
+    def ready(self):
+        return True
+
+def top():
+    return 1
+";
+        let o = signatures(src, &Language::Python).unwrap();
+        assert!(o.contains("class Config: …"), "class collapsed in map: {o}");
+        assert!(o.contains("def top(): …"), "{o}");
+        assert!(!o.contains("def ready"), "nested method hidden: {o}");
+    }
+
+    // `async def` headers are recognized like `def`: body elided with a marker.
+    #[test]
+    fn test_python_async_def() {
+        let src = "\
+async def fetch(url: str) -> bytes:
+    return await get(url)
+";
+        let o = outline(src, &Language::Python).unwrap();
+        assert!(o.contains("async def fetch(url: str) -> bytes: …"), "{o}");
+        assert!(!o.contains("await get"), "body dropped: {o}");
+    }
+
+    // A signature split across several lines is folded into one line up to the
+    // header colon, then marked — params survive, the body does not.
+    #[test]
+    fn test_python_multiline_signature_folded() {
+        let src = "\
+async def run_benchmark(
+    task: TaskConfig,
+    vms: int,
+) -> Result:
+    do_work()
+    return None
+";
+        let o = outline(src, &Language::Python).unwrap();
+        assert_eq!(
+            o.trim(),
+            "async def run_benchmark(task: TaskConfig, vms: int) -> Result: …"
+        );
+        assert_eq!(o.lines().count(), 1, "must fold to one line: {o:?}");
     }
 
     #[test]
