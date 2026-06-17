@@ -128,6 +128,13 @@ stream.rs
 
 このリポジトリでは **約74,000トークンのソースを約3,500トークンで表現**（約95%削減）し、トップレベル API は完全に保持します。Rust / Go / JS・TS / C / C++ / Java / Python に対応、`.gitignore` を尊重します。
 
+Python では関数本体を `…` マーカーで省略（`{ … }` に相当）、`async def` も `def` と同様に処理、複数行シグネチャは1行に折りたたみます:
+
+```python
+async def run(task: Task, retries: int = 3) -> Result: …
+class Config: …
+```
+
 ### Git
 ```bash
 bdo git status                  # コンパクトなステータス

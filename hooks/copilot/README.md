@@ -7,4 +7,4 @@
 - Uses the `bdo hook copilot` Rust binary (not a shell script) -- no `jq` dependency
 - Auto-detects two input formats: VS Code Copilot Chat (snake_case `tool_name`/`tool_input`) and Copilot CLI (camelCase `toolName`/`toolArgs` with JSON-stringified args)
 - VS Code format: returns `updatedInput` for transparent rewrite
-- Copilot CLI format: returns `permissionDecision: "deny"` with suggestion (Copilot CLI API doesn't support `updatedInput`)
+- Copilot CLI format: returns `modifiedArgs` for transparent rewrite (with `permissionDecision: "allow"` when auto-approved); deny/pass-through emit no output

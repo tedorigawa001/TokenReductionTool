@@ -169,6 +169,15 @@ On this repo that's **~74,000 tokens of source rendered in ~3,500** (≈95%
 reduction) with the complete top-level API intact. Supports Rust, Go, JS/TS, C,
 C++, Java, and Python; respects `.gitignore`.
 
+For Python, function bodies are elided with a `…` marker (the analogue of
+`{ … }`), `async def` is handled like `def`, and multi-line signatures are
+folded onto one line:
+
+```python
+async def run(task: Task, retries: int = 3) -> Result: …
+class Config: …
+```
+
 ### Git
 ```bash
 bdo git status                  # Compact status
