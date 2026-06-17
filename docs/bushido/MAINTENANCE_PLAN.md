@@ -204,3 +204,25 @@ bash scripts/check-test-presence.sh
 1. レビュー・ドッグフーディング継続、必要な改善の実装。
 2. 上記「残課題」の対応。
 3. リリース方針が決まり次第: GitHub リリース成果物 / Homebrew tap 整備 → push / PR。
+
+## 将来機能候補（バックログ）
+
+ドッグフーディング観察（assistant）と外部 AI レビューの提案を統合。未実装・未着手。
+
+### 最優先
+- **`bdo review`（イチオシ）**: 「人間 + Codex が一緒に見るための変更サマリ」を一発生成。`git status` / `git diff --stat` / 関連 `rg` / targeted test の手作業組み合わせを 1 コマンドに。出力候補: 変更ファイル一覧 / 怪しい生成物（`__pycache__` 等）/ 残存 `rtk` 文字列 / README・install URL の stale / 関連テスト候補。武士道（保守省力）らしさが出る。（`bdo doctor` 的な健診としても）
+- **検索/一覧系の欠落可視化**: `bdo find` / `bdo grep` が**マッチを無言で落とさない**こと。本セッションで `find -name 'rtk-rewrite*'` が空を返し実ファイルを見落とす実害が発生。省略時は「N 件中 M 件表示・全件は `--raw`」のようにマーカー+件数+raw 回復ヒントを必ず出す（`read` の reduced-view ヒントと同方針）。
+
+### かなり実用的
+- **`bdo map --changed [--against origin/main]`**: `git diff --name-only` 対象だけを map し、レビュー時に「今回触った API 面」だけ見る。
+- **`bdo test --changed`**: 変更ファイルから関連 unit test filter を推測して小さく回す（例: `src/core/outline.rs`→`outline::tests`、`src/cmds/system/read.rs`→`read::tests`）。
+- **`bdo read --raw-window`**: 今回 head/tail で実装した「明示 line window は raw に、通常 read は filter 後に要約」をモード名で明示し、挙動を分かりやすく。
+
+### 地味だが効く
+- **`bdo stale`**: `rtk` 残骸 / `cargo install bdo`（正しくは git/crate）/ `__pycache__` / 旧 hook 名 / 壊れた raw URL / docs と実装のコマンド名ズレ をまとめて検出。本セッションで何度も人力 `rg` した領域。`bdo review` のサブ機能としても可。
+- **共通 raw バイパスの統一**: `-l none` / `BDO_NO_TOML` / passthrough が散在。全コマンド共通の `--raw` / `BDO_RAW=1` に集約し学習コスト減。
+- **`BDO_QUIET=1`**: reduced-view ヒント等の stderr 補助メッセージを抑制。
+- **`bdo map` シンボルフィルタ / ドリルダウン**: `bdo map --grep <sym>`、map から特定ファイルを outline へ。
+
+### 要切り分け
+- **複合コマンド/パイプ堅牢性**: `cmd && echo` 連鎖の出力切れ・exit code 干渉の事象あり。フィルタが stdout/exit code を変えない保証（ハーネス側要因の可能性もあり要調査）。
