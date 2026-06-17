@@ -303,10 +303,12 @@ fn sanitize_log_field(s: &str) -> String {
 }
 
 fn audit_log_inner(action: &str, original: &str, rewritten: &str) -> Option<()> {
-    let home = dirs::home_dir()?;
-    let dir = home.join(".local").join("share").join("bdo");
-    std::fs::create_dir_all(&dir).ok()?;
-    let path = dir.join("hook-audit.log");
+    // Resolve via the shared helper so the writer honors BDO_AUDIT_DIR and stays
+    // aligned with the reader (`bdo hook-audit`).
+    let path = crate::hooks::hook_audit_cmd::default_log_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).ok()?;
+    }
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

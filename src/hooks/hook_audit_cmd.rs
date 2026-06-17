@@ -4,8 +4,9 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Default log file location (aligned with hook's $HOME/.local/share/bdo/).
-fn default_log_path() -> PathBuf {
+/// Default log file location, honoring `BDO_AUDIT_DIR`. Shared by the audit
+/// writer (`hook_cmd::audit_log_inner`) and reader so both resolve the same path.
+pub(crate) fn default_log_path() -> PathBuf {
     if let Ok(dir) = std::env::var("BDO_AUDIT_DIR") {
         PathBuf::from(dir).join("hook-audit.log")
     } else {
