@@ -191,12 +191,13 @@ bash scripts/check-test-presence.sh
 
 - `feat(read)` + `fix(read)`: `cat`/`head` の raw 取得性を改善。明示的 line window（`head -N`/`tail -N`/`--max-lines`）は **生 content に window**（フィルタをバイパス）して native head/tail 互換に。`filter::plain_head` で正確な先頭N行、`--max-lines 0` は空出力。縮約ビュー時は stdout flush 後に stderr へ raw 回復ヒント（`bdo read <file> -l none`）。→ [fc463b2] [6c29ace]
 - `docs`: `hooks/copilot/README.md` の Copilot CLI 挙動を実態（`modifiedArgs` 透過 rewrite）に修正。README/README_ja に Python outline/map の機能例（`async def … : …`・`class …: …`）を追記。→ [f02ced5]
+- `refactor(init)`: レガシー hook-script 移行サブシステムを撤去。`migrate_old_hook_script` / `remove_legacy_settings_entries` / `remove_legacy_hook_entries_from_json`（migrate からのみ到達）+ 専用テスト4件 + 呼び出し元2箇所（約246行）を削除。**script フックのライフサイクル（同梱 `bdo-rewrite.sh` / `integrity.rs` / `hook_check.rs` / install・uninstall 検知 `contains(REWRITE_HOOK_FILE)`）は手動インストール用に保持**（`hook_already_present` が script エントリを認識し二重登録を防止）。ついでに stale な `~/.config/rtk`→`bdo` コメントとステップ番号を修正。→ [b9e516c]
 
 **実態メモ**: 本セッションの全コミットは push 済み（HEAD = `f02ced5` 時点、`6c29ace` まで origin 同期確認済み）。release バイナリは `6c29ace` までの全修正を `cargo install --path .` で反映済み（`head`/`tail` 忠実化・`--max-lines 0`・audit `BDO_AUDIT_DIR`・`bdo-rewrite` リネーム等を実機確認）。Qiita 改善記事の下書きは `docs/bushido/qiita-improvements.md`（`.git/info/exclude` でローカル除外・非コミット）。
 
 **残課題（リリースと独立）**
-- レガシー `bdo-rewrite.sh` 掃除コードの整理: リネームで実質デッドコード化。完全削除するかの判断（保留）。
 - （将来）`cat f | shasum` などパイプ時の raw passthrough（選択肢C）: エージェントは常にパイプ実行のためフィルタが広範に無効化される副作用があり、要設計判断。
+- （任意）`b9e516c` を反映する release バイナリ再ビルド。
 
 ## 次の作業候補（リリースはペンディング）
 
