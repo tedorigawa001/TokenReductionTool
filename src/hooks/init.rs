@@ -47,7 +47,7 @@ schema_version = 1
 # on_empty = "my-tool: ok"
 "#;
 
-/// Template for user-global filters (~/.config/rtk/filters.toml).
+/// Template for user-global filters (~/.config/bdo/filters.toml).
 const FILTERS_GLOBAL_TEMPLATE: &str = r#"# User-global Bushido filters — apply to all your projects.
 # Project-local .bdo/filters.toml takes precedence over these.
 # Docs: https://github.com/tedorigawa001/TokenReductionTool#custom-filters
@@ -1135,10 +1135,7 @@ fn run_default_mode(
     let rtk_md_path = claude_dir.join(BDO_MD);
     let claude_md_path = claude_dir.join(CLAUDE_MD);
 
-    // 1. Migrate old hook script if present
-    migrate_old_hook_script(ctx);
-
-    // 2. Write Bushido.md
+    // 1. Write Bushido.md
     write_if_changed(&rtk_md_path, BDO_SLIM, BDO_MD, ctx)?;
 
     let opencode_plugin_path = if install_opencode {
@@ -1149,10 +1146,10 @@ fn run_default_mode(
         None
     };
 
-    // 3. Patch CLAUDE.md (add @Bushido.md, migrate if needed)
+    // 2. Patch CLAUDE.md (add @Bushido.md, migrate if needed)
     let migrated = patch_claude_md(&claude_md_path, ctx)?;
 
-    // 4. Print success message (skip in dry-run)
+    // 3. Print success message (skip in dry-run)
     if !dry_run {
         println!("\nRTK hook registered (global).\n");
         println!("  Command:   {}", CLAUDE_HOOK_COMMAND);
@@ -1168,7 +1165,7 @@ fn run_default_mode(
         }
     }
 
-    // 5. Patch settings.json with binary command
+    // 4. Patch settings.json with binary command
     let patch_result =
         patch_settings_json_command(CLAUDE_HOOK_COMMAND, patch_mode, install_opencode, ctx)?;
 
@@ -1195,7 +1192,7 @@ fn run_default_mode(
         }
     }
 
-    // 6. Generate user-global filters template (~/.config/rtk/filters.toml)
+    // 5. Generate user-global filters template (~/.config/bdo/filters.toml)
     generate_global_filters_template(ctx)?;
 
     if !dry_run {
@@ -1203,149 +1200,6 @@ fn run_default_mode(
     }
 
     Ok(())
-}
-
-/// Migrate old hook script to new binary command.
-/// Deletes `~/.claude/hooks/bdo-rewrite.sh` and `.bdo-hook.sha256` if present,
-/// and removes the stale settings.json entry so the new `bdo hook claude` entry
-/// can be registered.
-fn migrate_old_hook_script(ctx: InitContext) {
-    let InitContext { verbose, dry_run } = ctx;
-    if let Some(home) = dirs::home_dir() {
-        let old_hook = home
-            .join(CLAUDE_DIR)
-            .join(HOOKS_SUBDIR)
-            .join(REWRITE_HOOK_FILE);
-        if old_hook.exists() {
-            if dry_run {
-                println!(
-                    "[dry-run] would migrate legacy hook script: {}",
-                    old_hook.display()
-                );
-            // nosemgrep: filesystem-deletion
-            } else if let Err(e) = std::fs::remove_file(&old_hook) {
-                if verbose > 0 {
-                    eprintln!("  [warn] Failed to remove old hook script: {e}");
-                }
-            } else {
-                if verbose > 0 {
-                    eprintln!("  [ok] Removed old hook script: {}", old_hook.display());
-                }
-                // Clean up the stale settings.json entry that pointed to the deleted script
-                if let Err(e) = remove_legacy_settings_entries(ctx) {
-                    if verbose > 0 {
-                        eprintln!("  [warn] Failed to clean legacy settings.json entry: {e}");
-                    }
-                }
-            }
-        }
-        // Remove legacy hash file
-        let hash_file = home
-            .join(CLAUDE_DIR)
-            .join(HOOKS_SUBDIR)
-            .join(".bdo-hook.sha256");
-        if hash_file.exists() {
-            if dry_run {
-                println!(
-                    "[dry-run] would remove legacy hash file: {}",
-                    hash_file.display()
-                );
-            } else {
-                let _ = std::fs::remove_file(&hash_file);
-            }
-        }
-        // Remove Cursor legacy hook
-        let cursor_hook = home.join(CURSOR_DIR).join("hooks").join(REWRITE_HOOK_FILE);
-        if cursor_hook.exists() {
-            if dry_run {
-                println!(
-                    "[dry-run] would remove legacy Cursor hook: {}",
-                    cursor_hook.display()
-                );
-            } else {
-                let _ = std::fs::remove_file(&cursor_hook);
-            }
-        }
-    }
-}
-
-/// Remove only legacy `bdo-rewrite.sh` entries from settings.json.
-/// Preserves any existing `bdo hook claude` entries (new format).
-fn remove_legacy_settings_entries(ctx: InitContext) -> Result<()> {
-    let InitContext { verbose, dry_run } = ctx;
-    let claude_dir = resolve_claude_dir()?;
-    let settings_path = claude_dir.join(SETTINGS_JSON);
-
-    if !settings_path.exists() {
-        return Ok(());
-    }
-
-    let content = fs::read_to_string(&settings_path)
-        .with_context(|| format!("Failed to read {}", settings_path.display()))?;
-    if content.trim().is_empty() {
-        return Ok(());
-    }
-
-    let mut root: serde_json::Value = serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse {}", settings_path.display()))?;
-
-    if !remove_legacy_hook_entries_from_json(&mut root) {
-        return Ok(());
-    }
-
-    if dry_run {
-        println!(
-            "[dry-run] would remove legacy bdo-rewrite.sh entry from {}",
-            settings_path.display()
-        );
-        return Ok(());
-    }
-
-    // Backup before modifying
-    let backup_path = settings_path.with_extension("json.bak");
-    fs::copy(&settings_path, &backup_path)
-        .with_context(|| format!("Failed to backup to {}", backup_path.display()))?;
-
-    let serialized =
-        serde_json::to_string_pretty(&root).context("Failed to serialize settings.json")?;
-    atomic_write(&settings_path, &serialized)?;
-
-    if verbose > 0 {
-        eprintln!("  [ok] Removed legacy bdo-rewrite.sh entry from settings.json");
-    }
-    Ok(())
-}
-
-/// Remove only legacy `bdo-rewrite.sh` hook entries from a parsed settings.json.
-/// Returns true if any entries were removed.
-/// Does NOT remove `bdo hook claude` entries — those are the new format.
-fn remove_legacy_hook_entries_from_json(root: &mut serde_json::Value) -> bool {
-    let pre_tool_use_array = match root
-        .get_mut("hooks")
-        .and_then(|h| h.get_mut(PRE_TOOL_USE_KEY))
-        .and_then(|p| p.as_array_mut())
-    {
-        Some(arr) => arr,
-        None => return false,
-    };
-
-    let original_len = pre_tool_use_array.len();
-    pre_tool_use_array.retain(|entry| {
-        let dominated_by_legacy = entry
-            .get("hooks")
-            .and_then(|h| h.as_array())
-            .map(|hooks| {
-                hooks.iter().all(|hook| {
-                    hook.get("command")
-                        .and_then(|c| c.as_str())
-                        .is_some_and(|cmd| cmd.contains(REWRITE_HOOK_FILE))
-                })
-            })
-            .unwrap_or(false);
-        !dominated_by_legacy
-    });
-
-    pre_tool_use_array.len() < original_len
 }
 
 /// Generate .bdo/filters.toml template in the current directory if not present.
@@ -1381,7 +1235,7 @@ fn generate_project_filters_template(ctx: InitContext) -> Result<()> {
     Ok(())
 }
 
-/// Generate ~/.config/rtk/filters.toml template if not present.
+/// Generate ~/.config/bdo/filters.toml template if not present.
 fn generate_global_filters_template(ctx: InitContext) -> Result<()> {
     let InitContext { verbose, dry_run } = ctx;
     let config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from(".config"));
@@ -1428,9 +1282,6 @@ fn run_hook_only_mode(
         eprintln!("    For local projects, use default mode or --claude-md");
         return Ok(());
     }
-
-    // Migrate old hook script if present
-    migrate_old_hook_script(ctx);
 
     let opencode_plugin_path = if install_opencode {
         let path = prepare_opencode_plugin_path()?;
@@ -5724,103 +5575,6 @@ mod tests {
 
     // ─── Legacy migration tests ──────────────────────────────────────
 
-    #[test]
-    fn test_remove_legacy_hook_entries_strips_old_script() {
-        let mut root = serde_json::json!({
-            "hooks": {
-                "PreToolUse": [{
-                    "matcher": "Bash",
-                    "hooks": [{
-                        "type": "command",
-                        "command": "/home/user/.claude/hooks/bdo-rewrite.sh"
-                    }]
-                }]
-            }
-        });
-
-        assert!(remove_legacy_hook_entries_from_json(&mut root));
-        let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
-        assert!(arr.is_empty());
-    }
-
-    #[test]
-    fn test_remove_legacy_hook_entries_preserves_new_command() {
-        let mut root = serde_json::json!({
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "Bash",
-                        "hooks": [{
-                            "type": "command",
-                            "command": "/home/user/.claude/hooks/bdo-rewrite.sh"
-                        }]
-                    },
-                    {
-                        "matcher": "Bash",
-                        "hooks": [{
-                            "type": "command",
-                            "command": CLAUDE_HOOK_COMMAND
-                        }]
-                    }
-                ]
-            }
-        });
-
-        assert!(remove_legacy_hook_entries_from_json(&mut root));
-        let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        let cmd = arr[0]["hooks"][0]["command"].as_str().unwrap();
-        assert_eq!(cmd, CLAUDE_HOOK_COMMAND);
-    }
-
-    #[test]
-    fn test_remove_legacy_hook_entries_noop_when_no_legacy() {
-        let mut root = serde_json::json!({
-            "hooks": {
-                "PreToolUse": [{
-                    "matcher": "Bash",
-                    "hooks": [{
-                        "type": "command",
-                        "command": CLAUDE_HOOK_COMMAND
-                    }]
-                }]
-            }
-        });
-
-        assert!(!remove_legacy_hook_entries_from_json(&mut root));
-        let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-    }
-
-    #[test]
-    fn test_remove_legacy_hook_entries_preserves_third_party_hooks() {
-        let mut root = serde_json::json!({
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "Bash",
-                        "hooks": [{
-                            "type": "command",
-                            "command": "/home/user/.claude/hooks/bdo-rewrite.sh"
-                        }]
-                    },
-                    {
-                        "matcher": "Bash",
-                        "hooks": [{
-                            "type": "command",
-                            "command": "some-other-tool --hook"
-                        }]
-                    }
-                ]
-            }
-        });
-
-        assert!(remove_legacy_hook_entries_from_json(&mut root));
-        let arr = root["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        let cmd = arr[0]["hooks"][0]["command"].as_str().unwrap();
-        assert_eq!(cmd, "some-other-tool --hook");
-    }
 
     #[test]
     fn test_remove_legacy_cursor_entries_strips_old_script() {
