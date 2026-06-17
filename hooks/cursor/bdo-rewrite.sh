@@ -25,7 +25,7 @@ if [ -n "$BDO_VERSION" ]; then
   MAJOR=$(echo "$BDO_VERSION" | cut -d. -f1)
   MINOR=$(echo "$BDO_VERSION" | cut -d. -f2)
   if [ "$MAJOR" -eq 0 ] && [ "$MINOR" -lt 23 ]; then
-    echo "[bdo] WARNING: bdo $BDO_VERSION is too old (need >= 0.23.0). Upgrade: cargo install bdo" >&2
+    echo "[bdo] WARNING: bdo $BDO_VERSION is too old (need >= 0.23.0). Upgrade: cargo install --git https://github.com/tedorigawa001/TokenReductionTool" >&2
     exit 0
   fi
 fi

@@ -36,7 +36,7 @@ if [ ! -f "$CACHE_FILE" ]; then
     IFS=. read -r MAJOR MINOR PATCH <<<"$BDO_VERSION"
     # Require >= 0.23.0
     if [ "$MAJOR" -eq 0 ] && [ "$MINOR" -lt 23 ]; then
-      echo "[bdo] WARNING: bdo $BDO_VERSION is too old (need >= 0.23.0). Upgrade: cargo install bdo" >&2
+      echo "[bdo] WARNING: bdo $BDO_VERSION is too old (need >= 0.23.0). Upgrade: cargo install --git https://github.com/tedorigawa001/TokenReductionTool" >&2
       exit 0
     fi
   fi
