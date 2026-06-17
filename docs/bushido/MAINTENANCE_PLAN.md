@@ -175,11 +175,24 @@ bash scripts/check-test-presence.sh
 - README/install.sh/Formula の install 手順（Homebrew tap・releases・install.sh URL）はリリース後に有効。
 - push / PR もリリース方針確定まで保留。
 
+### 2026-06-17 — ドッグフーディング駆動の修正（grep / Python outline / 診断 / リネーム）
+
+`main` で作業。`cargo test` 全 2191 passed / 0 failed / 8 ignored。release バイナリも `cargo install --path .` で再ビルド・反映済み。
+
+- `fix(grep)`: `bdo grep -h` がフックで `--help` 化していた衝突を解消。clap の auto `-h` を無効化し `-h`/`--no-filename` を `no_filename` フラグに束縛 → bdo の再帰検索（rg/grep）へ転送。`--help`（long のみ・`ArgAction::Help`）は維持。`-l`/`-m` の short を外し grep/rg へ passthrough。→ [94f0fcf]
+- `feat(outline)`: Python に本体省略マーカー `def foo(): …` を導入（Rust の `{ … }` に相当）。あわせて **`async def` を関数として認識**（未対応で本体が素通しだった）、**複数行シグネチャを 1 行に折りたたみ**（`scan_header_colon`）、ワンライナー本体/行末コメントを除去。実測 `runner.py` は outline が実質 0% → 約 84% 削減に改善。→ [fffa057]
+- `fix(outline)`: map（`collapse_all`）モードで Python decorator を抑制（`@deco` が "signature" として水増しカウントされていた問題）。→ [d644cfb]
+- `fix(check-installation)`: Check 6 をネイティブフック（settings.json の `bdo hook claude`）検出に修正。レガシー script 検出のみだった誤診断を解消。→ [834f753]
+- `refactor(hooks)`: `rtk-rewrite.sh` → `bdo-rewrite.sh` に全面リネーム（`REWRITE_HOOK_FILE`・`.rtk-hook.sha256`→`.bdo-hook.sha256`・テストスクリプト `test-rtk-rewrite.sh`→`test-bdo-rewrite.sh`・コード/docs/フィクスチャ）。リポジトリ全体で `rtk-rewrite` 文字列ゼロ。**メンテナ判断: 上流 rtk からの移行検知は廃止**（`rtk-rewrite.sh` の検出/掃除はしない）。→ [72df662]
+
+**実態メモ**: `origin/main` は上記コミット（HEAD = `72df662`）と一致済み。本セッション分は push 済みの状態（台帳の「push 保留」は実態とずれ）。Qiita 改善記事の下書きは `docs/bushido/qiita-improvements.md`（`.git/info/exclude` でローカル除外・非コミット）。
+
 **残課題（リリースと独立）**
-- `check-installation.sh` のフック検出が legacy `bdo-rewrite.sh` のみ＝ネイティブ `bdo hook` 方式を検出しない点の要否判断。
-- 標準 python/bash プラグインテストの実行確認（`hooks/hermes/tests/`, `hooks/*/test-*.sh`）。
-- `bdo grep -h` がフックで `--help` 化（grep `-h`=--no-filename と衝突）— 未知/衝突フラグの扱いを要検討。
-- Python の outline/map に本体省略マーカーが無い（`def foo():` で終わる）— `def foo(): …` 化の検討。
+- `check-installation.sh` の stale 箇所: install URL（`.../blob/master/install.sh` は HTML を返す壊れリンク。`raw.githubusercontent` が正）と SUMMARY の旧フォーク手順（`git checkout feat/all-features` 等）。
+- 標準 python/bash プラグインテストの実行確認（`hooks/hermes/tests/`, `hooks/*/test-bdo-rewrite.sh`）。今回リネーム済みだが実行は未確認。
+- `cat`/`head` 自動書き換え時の raw 内容取得性（生内容が必要な場面の扱い）。
+- レガシー `bdo-rewrite.sh` 掃除コードの整理: リネームで実質デッドコード化。完全削除するかの判断。
+- README/README_ja の機能追記（任意）: outline/map の Python `async def`・`def foo(): …` 例。
 
 ## 次の作業候補（リリースはペンディング）
 
