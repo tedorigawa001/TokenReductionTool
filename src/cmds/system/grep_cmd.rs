@@ -45,7 +45,7 @@ pub fn run(
         .context("grep/rg failed")?;
 
     // Passthrough output flags that produce output that is already small.
-    if has_format_flag(extra_args) {
+    if is_passthrough(extra_args) {
         print!("{}", result.stdout);
         if !result.stderr.is_empty() {
             eprint!("{}", result.stderr.trim());
@@ -191,6 +191,12 @@ fn build_rg_args(
         // no longer grep-compatible (e.g. -l would emit NUL-terminated paths).
         args.push(rg_pattern.to_string());
         args.push(path.to_string());
+    } else if has_context_flag(extra_args) {
+        // Context flags pass through too, but keep line numbers + filename so the
+        // raw -A/-B/-C output stays readable. No NUL: the output isn't parsed.
+        args.push("-nH".to_string());
+        args.push(rg_pattern.to_string());
+        args.push(path.to_string());
     } else {
         // -n: line numbers, -H: always filename, -0: NUL-separate filename.
         // NUL separation lets parse_match_line disambiguate filenames/content
@@ -254,6 +260,32 @@ fn has_format_flag(extra_args: &[String]) -> bool {
                 | "--null"
         )
     })
+}
+
+/// Context flags (`-A`/`-B`/`-C`, attached `-A3`, or the `--*-context[=N]` long
+/// forms) emit interleaved context lines and `--` separators that are not
+/// matches. bdo's grouped view can't represent them, so they trigger passthrough
+/// of the raw search output — and crucially keep the match count honest (the
+/// separators must not be counted as matches).
+fn has_context_flag(extra_args: &[String]) -> bool {
+    extra_args.iter().any(|arg| {
+        let a = arg.as_str();
+        matches!(
+            a,
+            "-A" | "-B" | "-C" | "--after-context" | "--before-context" | "--context"
+        ) || (a.len() > 2
+            && (a.starts_with("-A") || a.starts_with("-B") || a.starts_with("-C"))
+            && a[2..].chars().all(|c| c.is_ascii_digit()))
+            || a.starts_with("--after-context=")
+            || a.starts_with("--before-context=")
+            || a.starts_with("--context=")
+    })
+}
+
+/// Output that bdo passes through verbatim rather than regrouping: format flags
+/// with their own shape, and context flags whose separators aren't matches.
+fn is_passthrough(extra_args: &[String]) -> bool {
+    has_format_flag(extra_args) || has_context_flag(extra_args)
 }
 
 fn clean_line(line: &str, max_len: usize, context_re: Option<&Regex>, pattern: &str) -> String {
@@ -444,6 +476,24 @@ mod tests {
     fn test_format_flag_detects_count() {
         assert!(has_format_flag(&["-c".to_string()]));
         assert!(has_format_flag(&["--count".to_string()]));
+    }
+
+    #[test]
+    fn test_context_flag_detection() {
+        for f in ["-A", "-B", "-C", "-A3", "-C2", "--after-context", "--context=2"] {
+            assert!(has_context_flag(&[f.to_string()]), "should detect {f}");
+        }
+        // Not context flags:
+        assert!(!has_context_flag(&["-i".to_string()]));
+        assert!(!has_context_flag(&["-Abc".to_string()])); // attached value must be digits
+        assert!(!has_context_flag(&["pattern".to_string()]));
+    }
+
+    #[test]
+    fn test_is_passthrough_covers_format_and_context() {
+        assert!(is_passthrough(&["-c".to_string()])); // format
+        assert!(is_passthrough(&["-A".to_string()])); // context
+        assert!(!is_passthrough(&["-i".to_string()])); // neither
     }
 
     #[test]

@@ -1859,6 +1859,11 @@ fn run_cli() -> Result<i32> {
             if no_filename {
                 extra_args.insert(0, "--no-filename".to_string());
             }
+            // The "+N more — use --all" hint invites appending `--all` after the
+            // pattern, where trailing_var_arg sweeps it into extra_args (and on to
+            // rg, which rejects it). Interpret it on the bdo side instead.
+            let all = all || extra_args.iter().any(|a| a == "--all");
+            extra_args.retain(|a| a != "--all");
             // `--all` lifts every cap; grep_cmd treats usize::MAX as "no limit"
             // (including the per-file cap).
             let max = if all { usize::MAX } else { max };
