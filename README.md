@@ -173,6 +173,10 @@ On this repo that's **~74,000 tokens of source rendered in ~3,500** (≈95%
 reduction) with the complete top-level API intact. Supports Rust, Go, JS/TS, C,
 C++, Java, and Python; respects `.gitignore`.
 
+`bdo map --changed` narrows the map to the git change set (add
+`--against origin/main` for the whole-branch diff) — the API surface you touched,
+ideal alongside `bdo review`.
+
 For Python, function bodies are elided with a `…` marker (the analogue of
 `{ … }`), `async def` is handled like `def`, and multi-line signatures are
 folded onto one line:

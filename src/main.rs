@@ -249,6 +249,12 @@ enum Commands {
         /// Directory to map
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// Map only files in the git change set (working tree, or --against)
+        #[arg(long)]
+        changed: bool,
+        /// With --changed, diff against a git ref (e.g. origin/main) instead of the working tree
+        #[arg(long)]
+        against: Option<String>,
     },
 
     /// Change summary for review: changed files, stray artifacts, stale markers, test hints
@@ -1726,8 +1732,12 @@ fn run_cli() -> Result<i32> {
             0
         }
 
-        Commands::Map { path } => {
-            map::run(&path, cli.verbose)?;
+        Commands::Map {
+            path,
+            changed,
+            against,
+        } => {
+            map::run(&path, changed, against.as_deref(), cli.verbose)?;
             0
         }
 

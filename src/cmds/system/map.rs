@@ -5,7 +5,11 @@
 //! [`crate::core::outline::signatures`]. The result lets an agent grasp a whole
 //! codebase's API surface in a single command instead of `ls`-ing then reading
 //! each file. Non-source files (data, unknown languages) are skipped.
+//!
+//! `--changed [--against <ref>]` narrows the map to the git change set, so a
+//! reviewer sees just the API surface they touched.
 
+use crate::core::changes;
 use crate::core::filter::Language;
 use crate::core::outline;
 use crate::core::tracking;
@@ -13,25 +17,19 @@ use anyhow::Result;
 use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
 
-pub fn run(path: &Path, verbose: u8) -> Result<()> {
+pub fn run(path: &Path, changed: bool, against: Option<&str>, verbose: u8) -> Result<()> {
     let timer = tracking::TimedExecution::start();
 
     if verbose > 0 {
-        eprintln!("Mapping: {}", path.display());
+        eprintln!("Mapping: {} (changed={})", path.display(), changed);
     }
 
     // Collect candidate files first so the output is sorted and deterministic.
-    let mut files: Vec<PathBuf> = WalkBuilder::new(path)
-        .hidden(true)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .build()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
-        .map(|e| e.into_path())
-        .collect();
-    files.sort();
+    let files = if changed {
+        changed_source_files(path, against)?
+    } else {
+        walk_source_files(path)
+    };
 
     let mut out = String::new();
     let mut raw_all = String::new();
@@ -73,11 +71,20 @@ pub fn run(path: &Path, verbose: u8) -> Result<()> {
     }
 
     if file_count == 0 {
-        out.push_str("No source files found to map.\n");
+        out.push_str(if changed {
+            "No changed source files to map.\n"
+        } else {
+            "No source files found to map.\n"
+        });
     } else {
+        let scope = match (changed, against) {
+            (true, Some(base)) => format!(" (changed vs {})", base),
+            (true, None) => " (changed)".to_string(),
+            (false, _) => String::new(),
+        };
         out.push_str(&format!(
-            "\n— {} files, {} signatures (full source: {} lines)\n",
-            file_count, sig_lines, source_lines
+            "\n— {} files, {} signatures{} (full source: {} lines)\n",
+            file_count, sig_lines, scope, source_lines
         ));
     }
 
@@ -85,4 +92,39 @@ pub fn run(path: &Path, verbose: u8) -> Result<()> {
     // Savings are relative to reading the full source of the mapped files.
     timer.track(&format!("map {}", path.display()), "bdo map", &raw_all, &out);
     Ok(())
+}
+
+/// Source files under `path`, respecting `.gitignore` (the default whole-tree map).
+fn walk_source_files(path: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = WalkBuilder::new(path)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .build()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+        .map(|e| e.into_path())
+        .collect();
+    files.sort();
+    files
+}
+
+/// Files in the git change set (working tree, or vs `against`) that still exist
+/// on disk and live under `path`. Non-source files are dropped later when
+/// `outline::signatures` returns `None`.
+fn changed_source_files(path: &Path, against: Option<&str>) -> Result<Vec<PathBuf>> {
+    if !changes::in_git_repo() {
+        anyhow::bail!("bdo map --changed: not inside a git repository");
+    }
+    let under_path = |p: &Path| path == Path::new(".") || p.starts_with(path);
+    let mut files: Vec<PathBuf> = changes::changed_files(against)?
+        .into_iter()
+        .filter(|c| c.status != "D") // deleted files can't be mapped
+        .map(|c| PathBuf::from(c.path))
+        .filter(|p| p.is_file() && under_path(p))
+        .collect();
+    files.sort();
+    files.dedup();
+    Ok(files)
 }

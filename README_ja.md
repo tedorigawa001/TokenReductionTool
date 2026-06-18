@@ -130,6 +130,8 @@ stream.rs
 
 このリポジトリでは **約74,000トークンのソースを約3,500トークンで表現**（約95%削減）し、トップレベル API は完全に保持します。Rust / Go / JS・TS / C / C++ / Java / Python に対応、`.gitignore` を尊重します。
 
+`bdo map --changed` は git の変更セットだけにマップを絞ります（`--against origin/main` でブランチ全体の差分）。触った API 面だけを見られ、`bdo review` と併用すると便利です。
+
 Python では関数本体を `…` マーカーで省略（`{ … }` に相当）、`async def` も `def` と同様に処理、複数行シグネチャは1行に折りたたみます:
 
 ```python
