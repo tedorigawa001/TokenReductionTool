@@ -117,12 +117,14 @@ fn changed_source_files(path: &Path, against: Option<&str>) -> Result<Vec<PathBu
     if !changes::in_git_repo() {
         anyhow::bail!("bdo map --changed: not inside a git repository");
     }
-    let under_path = |p: &Path| path == Path::new(".") || p.starts_with(path);
-    let mut files: Vec<PathBuf> = changes::changed_files(against)?
+    // `path` is handed to git as a pathspec, so git resolves it (absolute,
+    // relative, or a subdirectory) and returns repo-relative paths.
+    let spec = (path != Path::new(".")).then_some(path);
+    let mut files: Vec<PathBuf> = changes::changed_files(against, spec)?
         .into_iter()
         .filter(|c| c.status != "D") // deleted files can't be mapped
         .map(|c| PathBuf::from(c.path))
-        .filter(|p| p.is_file() && under_path(p))
+        .filter(|p| p.is_file())
         .collect();
     files.sort();
     files.dedup();

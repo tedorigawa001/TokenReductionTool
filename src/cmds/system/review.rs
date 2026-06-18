@@ -46,7 +46,7 @@ pub fn run(against: Option<&str>, verbose: u8) -> Result<()> {
         anyhow::bail!("bdo review: not inside a git repository");
     }
 
-    let changes = changed_files(against)?;
+    let changes = changed_files(against, None)?;
     let base_label = against.unwrap_or("uncommitted");
 
     let mut out = String::new();

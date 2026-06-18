@@ -5,6 +5,7 @@
 //! emits raw, unquoted paths and lets rename records be parsed unambiguously.
 
 use anyhow::{Context, Result};
+use std::path::Path;
 use std::process::Command;
 
 /// A changed path with its git status code (e.g. "M", "A", "??", "R").
@@ -39,14 +40,32 @@ fn git_stdout(args: &[&str]) -> Result<String> {
 
 /// The change set: working-tree changes (incl. untracked) when `against` is
 /// `None`, or the diff vs a ref (plus untracked files) when `against` is `Some`.
-pub fn changed_files(against: Option<&str>) -> Result<Vec<Change>> {
+///
+/// `pathspec` (if given) is passed to git as a `-- <path>` filter, so git itself
+/// resolves it — absolute, relative, or a subdirectory all work. `git status`
+/// runs with `--untracked-files=all` so untracked directories are expanded into
+/// their individual files rather than collapsed to `dir/`.
+pub fn changed_files(against: Option<&str>, pathspec: Option<&Path>) -> Result<Vec<Change>> {
+    let spec = pathspec.and_then(|p| p.to_str());
+    // Append `-- <pathspec>` so git filters by path itself.
+    fn push_spec<'a>(args: &mut Vec<&'a str>, spec: Option<&'a str>) {
+        if let Some(s) = spec {
+            args.push("--");
+            args.push(s);
+        }
+    }
+
     match against {
         Some(base) => {
-            let mut changes =
-                parse_name_status_z(&git_stdout(&["diff", "--name-status", "-z", base])?);
+            let mut diff_args = vec!["diff", "--name-status", "-z", base];
+            push_spec(&mut diff_args, spec);
+            let mut changes = parse_name_status_z(&git_stdout(&diff_args)?);
+
             // `git diff` only sees tracked changes; add untracked files so new
             // files are still considered in --against mode.
-            let untracked = git_stdout(&["ls-files", "--others", "--exclude-standard", "-z"])?;
+            let mut ls_args = vec!["ls-files", "--others", "--exclude-standard", "-z"];
+            push_spec(&mut ls_args, spec);
+            let untracked = git_stdout(&ls_args)?;
             for path in untracked.split('\0').filter(|p| !p.is_empty()) {
                 changes.push(Change {
                     status: "??".to_string(),
@@ -55,11 +74,11 @@ pub fn changed_files(against: Option<&str>) -> Result<Vec<Change>> {
             }
             Ok(changes)
         }
-        None => Ok(parse_porcelain_z(&git_stdout(&[
-            "status",
-            "--porcelain=v1",
-            "-z",
-        ])?)),
+        None => {
+            let mut args = vec!["status", "--porcelain=v1", "-z", "--untracked-files=all"];
+            push_spec(&mut args, spec);
+            Ok(parse_porcelain_z(&git_stdout(&args)?))
+        }
     }
 }
 
