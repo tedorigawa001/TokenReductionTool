@@ -233,6 +233,9 @@ bdo stale — scanned 312 tracked files
 ✗ 1 residue item(s) found
 ```
 
+Add a `.bdostaleignore` (gitignore-style globs) for files that legitimately
+*document* residue — a changelog or rename ledger — so they aren't flagged.
+
 ### Git
 ```bash
 bdo git status                  # Compact status

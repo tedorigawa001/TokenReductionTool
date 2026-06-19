@@ -1,0 +1,9 @@
+# `bdo stale` ignore list — gitignore-style globs.
+# Files here are skipped by `bdo stale`. Use it for files that legitimately
+# document residue (rename history, changelogs) rather than contain it.
+
+# The maintenance ledger records the rtk→bdo rename and quotes the old names.
+docs/bushido/MAINTENANCE_PLAN.md
+
+# The changelog records historical behavior (old paths, old names).
+CHANGELOG.md
