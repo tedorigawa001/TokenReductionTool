@@ -1365,6 +1365,42 @@ fn shell_split(input: &str) -> Vec<String> {
     discover::lexer::shell_split(input)
 }
 
+/// Recover `--changed`/`--against` for `bdo test` from the trailing command.
+///
+/// `trailing_var_arg` sweeps any flags after the test command into `command`
+/// (e.g. `bdo test cargo test --changed --against origin/main`), so clap never
+/// sees them. Pull them back out — `--changed`, `--against <ref>`, and
+/// `--against=<ref>` (consuming the value) — and return the remaining tokens as
+/// the literal command. Clap-level values take precedence over trailing ones.
+fn resolve_test_changed_args(
+    changed: bool,
+    against: Option<String>,
+    command: Vec<String>,
+) -> (bool, Option<String>, Vec<String>) {
+    let mut changed = changed;
+    let mut against = against;
+    let mut rest: Vec<String> = Vec::new();
+    let mut it = command.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--changed" => changed = true,
+            "--against" => {
+                let val = it.next();
+                if against.is_none() {
+                    against = val;
+                }
+            }
+            s if s.starts_with("--against=") => {
+                if against.is_none() {
+                    against = Some(s["--against=".len()..].to_string());
+                }
+            }
+            _ => rest.push(arg),
+        }
+    }
+    (changed, against, rest)
+}
+
 /// Merge pnpm global filters args with other ones for standard String-based commands
 fn merge_pnpm_args(filters: &[String], args: &[String]) -> Vec<String> {
     filters
@@ -1721,30 +1757,8 @@ fn run_cli() -> Result<i32> {
             command,
         } => {
             // trailing_var_arg sweeps `--changed`/`--against` into `command` when
-            // they trail the test command, so recover both (consuming --against's
-            // value) and keep the rest as the literal command.
-            let mut changed = changed;
-            let mut against = against;
-            let mut rest: Vec<String> = Vec::new();
-            let mut it = command.into_iter();
-            while let Some(arg) = it.next() {
-                match arg.as_str() {
-                    "--changed" => changed = true,
-                    "--against" => {
-                        let val = it.next();
-                        if against.is_none() {
-                            against = val;
-                        }
-                    }
-                    s if s.starts_with("--against=") => {
-                        if against.is_none() {
-                            against = Some(s["--against=".len()..].to_string());
-                        }
-                    }
-                    _ => rest.push(arg),
-                }
-            }
-            let command = rest;
+            // they trail the test command; recover them (see resolve_test_changed_args).
+            let (changed, against, command) = resolve_test_changed_args(changed, against, command);
             if changed {
                 use core::changes;
                 if !command.is_empty() {
@@ -2683,6 +2697,63 @@ mod tests {
     use super::*;
     use clap::Parser;
     use std::cell::Cell;
+
+    fn sv(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    // `bdo test --changed` recovers --changed/--against even when they are swept
+    // into the trailing command by trailing_var_arg.
+    #[test]
+    fn test_resolve_test_changed_trailing_changed_only() {
+        let (changed, against, cmd) = resolve_test_changed_args(false, None, sv(&["--changed"]));
+        assert!(changed);
+        assert_eq!(against, None);
+        assert!(cmd.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_test_changed_trailing_against_space_form() {
+        // Regression: `bdo test cargo test --changed --against origin/main`
+        let (changed, against, cmd) = resolve_test_changed_args(
+            false,
+            None,
+            sv(&["cargo", "test", "--changed", "--against", "origin/main"]),
+        );
+        assert!(changed);
+        assert_eq!(against.as_deref(), Some("origin/main"));
+        assert_eq!(cmd, sv(&["cargo", "test"]));
+    }
+
+    #[test]
+    fn test_resolve_test_changed_trailing_against_eq_form() {
+        let (changed, against, cmd) =
+            resolve_test_changed_args(false, None, sv(&["--changed", "--against=HEAD~1"]));
+        assert!(changed);
+        assert_eq!(against.as_deref(), Some("HEAD~1"));
+        assert!(cmd.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_test_changed_clap_against_takes_precedence() {
+        // A clap-parsed --against wins over a trailing one.
+        let (changed, against, _cmd) = resolve_test_changed_args(
+            true,
+            Some("main".to_string()),
+            sv(&["--against", "dev"]),
+        );
+        assert!(changed);
+        assert_eq!(against.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn test_resolve_test_changed_plain_command_untouched() {
+        let (changed, against, cmd) =
+            resolve_test_changed_args(false, None, sv(&["cargo", "test", "--", "foo"]));
+        assert!(!changed);
+        assert_eq!(against, None);
+        assert_eq!(cmd, sv(&["cargo", "test", "--", "foo"]));
+    }
 
     #[test]
     fn test_git_commit_single_message() {
