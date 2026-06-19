@@ -179,7 +179,10 @@ bdo vitest                      # Vitest コンパクト
 bdo pytest                      # Python テスト（-90%）
 bdo go test                     # Go テスト（-90%）
 bdo test <cmd>                  # 失敗のみ表示（-90%）
+bdo test --changed              # 変更した Rust ファイルのテストだけ実行（+ --against <ref>）
 ```
+
+`bdo test --changed` は git の変更セットから `cargo test -- <stems>`（ファイル stem = inline テストモジュール。例: `src/core/outline.rs` → `outline`）を導出し、対象だけを失敗のみ表示で実行します。`bdo review` / `bdo map --changed` と併用すると便利です。
 
 ### ビルド & リント
 ```bash

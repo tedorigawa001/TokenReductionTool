@@ -6,10 +6,9 @@
 //! Scoped to the change set (working tree, or `--against <ref>`), not the whole
 //! repo — keeping the output small, in the spirit of the rest of bdo.
 
-use crate::core::changes::{changed_files, in_git_repo, Change};
+use crate::core::changes::{changed_files, in_git_repo, rust_test_targets};
 use crate::core::tracking;
 use anyhow::Result;
-use std::collections::BTreeSet;
 
 /// Generated/junk path fragments that usually should not be committed.
 /// `(fragment, label)` — `fragment` is matched as a substring of the path.
@@ -113,7 +112,7 @@ pub fn run(against: Option<&str>, verbose: u8) -> Result<()> {
     }
 
     // ── Suggested tests ──────────────────────────────────────────
-    let targets = suggested_test_targets(&changes);
+    let targets = rust_test_targets(&changes);
     if targets.is_empty() {
         out.push_str("\n🧪 SUGGESTED TESTS\n  ✓ none (no Rust sources changed)\n");
     } else {
@@ -158,28 +157,6 @@ fn artifact_reason(path: &str) -> Option<&'static str> {
         .map(|(_, label)| *label)
 }
 
-/// Map changed Rust sources under `src/` to `cargo test` filters: the file stem
-/// is the inline test-module name (`src/core/outline.rs` → `outline`).
-fn suggested_test_targets(changes: &[Change]) -> BTreeSet<String> {
-    let mut targets = BTreeSet::new();
-    for c in changes {
-        if c.status == "D" {
-            continue;
-        }
-        let p = &c.path;
-        if !p.starts_with("src/") || !p.ends_with(".rs") {
-            continue;
-        }
-        let stem = p.rsplit('/').next().unwrap_or(p).trim_end_matches(".rs");
-        // `mod.rs`/`main.rs`/`lib.rs` aren't useful filters on their own.
-        if matches!(stem, "mod" | "main" | "lib") {
-            continue;
-        }
-        targets.insert(stem.to_string());
-    }
-    targets
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,23 +166,6 @@ mod tests {
         assert!(artifact_reason("a/__pycache__/x.pyc").is_some());
         assert!(artifact_reason("target/debug/bdo").is_some());
         assert!(artifact_reason("src/core/filter.rs").is_none());
-    }
-
-    #[test]
-    fn test_suggested_test_targets_maps_stems() {
-        let changes = vec![
-            Change { status: "M".into(), path: "src/core/outline.rs".into() },
-            Change { status: "M".into(), path: "src/cmds/system/read.rs".into() },
-            Change { status: "M".into(), path: "src/main.rs".into() }, // skipped
-            Change { status: "M".into(), path: "README.md".into() },   // skipped
-            Change { status: "D".into(), path: "src/core/gone.rs".into() }, // deleted, skipped
-        ];
-        let t = suggested_test_targets(&changes);
-        assert!(t.contains("outline"));
-        assert!(t.contains("read"));
-        assert!(!t.contains("main"));
-        assert!(!t.contains("gone"));
-        assert_eq!(t.len(), 2);
     }
 
     #[test]

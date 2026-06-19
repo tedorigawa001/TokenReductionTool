@@ -245,7 +245,12 @@ bdo rake test                   # Ruby minitest (-90%)
 bdo rspec                       # RSpec tests (JSON, -60%+)
 bdo err <cmd>                   # Filter errors only from any command
 bdo test <cmd>                  # Generic test wrapper - failures only (-90%)
+bdo test --changed              # Run only tests for changed Rust files (+ --against <ref>)
 ```
+
+`bdo test --changed` derives `cargo test -- <stems>` from the git change set
+(file stem = inline test module, e.g. `src/core/outline.rs` → `outline`) and
+runs just those, failures-only — pairs with `bdo review`/`bdo map --changed`.
 
 ### Build & Lint
 ```bash

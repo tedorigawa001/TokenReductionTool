@@ -5,6 +5,7 @@
 //! emits raw, unquoted paths and lets rename records be parsed unambiguously.
 
 use anyhow::{Context, Result};
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
@@ -82,6 +83,29 @@ pub fn changed_files(against: Option<&str>, pathspec: Option<&Path>) -> Result<V
     }
 }
 
+/// Inline-test-module names worth running for a change set: the file stem of
+/// each changed Rust source under `src/` (`src/core/outline.rs` → `outline`),
+/// which is also its `#[cfg(test)] mod tests` filter for `cargo test -- <stem>`.
+/// `mod`/`main`/`lib` are skipped — too generic to be useful filters.
+pub fn rust_test_targets(changes: &[Change]) -> BTreeSet<String> {
+    let mut targets = BTreeSet::new();
+    for c in changes {
+        if c.status == "D" {
+            continue;
+        }
+        let p = &c.path;
+        if !p.starts_with("src/") || !p.ends_with(".rs") {
+            continue;
+        }
+        let stem = p.rsplit('/').next().unwrap_or(p).trim_end_matches(".rs");
+        if matches!(stem, "mod" | "main" | "lib") {
+            continue;
+        }
+        targets.insert(stem.to_string());
+    }
+    targets
+}
+
 /// Parse `git diff --name-status -z` output: each record is `STATUS\0PATH\0`,
 /// and for a rename/copy `R###\0SRC\0DST\0` — keep the new (DST) path.
 fn parse_name_status_z(raw: &str) -> Vec<Change> {
@@ -127,6 +151,23 @@ fn parse_porcelain_z(raw: &str) -> Vec<Change> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_rust_test_targets_maps_stems() {
+        let changes = vec![
+            Change { status: "M".into(), path: "src/core/outline.rs".into() },
+            Change { status: "M".into(), path: "src/cmds/system/read.rs".into() },
+            Change { status: "M".into(), path: "src/main.rs".into() }, // skipped
+            Change { status: "M".into(), path: "README.md".into() },   // skipped
+            Change { status: "D".into(), path: "src/core/gone.rs".into() }, // deleted, skipped
+        ];
+        let t = rust_test_targets(&changes);
+        assert!(t.contains("outline"));
+        assert!(t.contains("read"));
+        assert!(!t.contains("main"));
+        assert!(!t.contains("gone"));
+        assert_eq!(t.len(), 2);
+    }
 
     #[test]
     fn test_parse_porcelain_z_statuses_and_paths() {

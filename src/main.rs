@@ -220,7 +220,13 @@ enum Commands {
 
     /// Run tests and show only failures
     Test {
-        /// Test command (e.g. cargo test)
+        /// Run only the tests related to the git change set (Rust: `cargo test -- <stems>`)
+        #[arg(long)]
+        changed: bool,
+        /// With --changed, derive targets from the diff vs a git ref (e.g. origin/main)
+        #[arg(long)]
+        against: Option<String>,
+        /// Test command (e.g. cargo test); ignored when --changed is set
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
@@ -1709,9 +1715,40 @@ fn run_cli() -> Result<i32> {
             runner::run_err(&cmd, cli.verbose)?
         }
 
-        Commands::Test { command } => {
-            let cmd = command.join(" ");
-            runner::run_test(&cmd, cli.verbose)?
+        Commands::Test {
+            changed,
+            against,
+            mut command,
+        } => {
+            // `--changed` may be swept into `command` by trailing_var_arg; honor it
+            // either way and strip it out.
+            let changed = changed || command.iter().any(|a| a == "--changed");
+            command.retain(|a| a != "--changed");
+            if changed {
+                use core::changes;
+                if !changes::in_git_repo() {
+                    anyhow::bail!("bdo test --changed: not inside a git repository");
+                }
+                let targets = changes::rust_test_targets(&changes::changed_files(
+                    against.as_deref(),
+                    None,
+                )?);
+                if targets.is_empty() {
+                    println!("bdo test --changed: no Rust test targets in the change set");
+                    0
+                } else {
+                    let filters = targets.into_iter().collect::<Vec<_>>().join(" ");
+                    // Multiple libtest filters must follow `--`.
+                    let cmd = format!("cargo test -- {filters}");
+                    if cli.verbose > 0 {
+                        eprintln!("bdo test --changed: {cmd}");
+                    }
+                    runner::run_test(&cmd, cli.verbose)?
+                }
+            } else {
+                let cmd = command.join(" ");
+                runner::run_test(&cmd, cli.verbose)?
+            }
         }
 
         Commands::Json {
