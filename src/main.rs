@@ -1401,6 +1401,24 @@ fn resolve_test_changed_args(
     (changed, against, rest)
 }
 
+/// Normalize grep's trailing args. Re-inject `--no-filename` for the `-h` flag
+/// (so it reaches rg/grep), and recover `--all` — which trailing_var_arg may
+/// have swept into extra_args, from where it would otherwise reach rg as an
+/// unknown flag. Returns whether every cap should be lifted and the cleaned
+/// args to forward to the search.
+fn normalize_grep_args(
+    no_filename: bool,
+    all: bool,
+    mut extra_args: Vec<String>,
+) -> (bool, Vec<String>) {
+    if no_filename {
+        extra_args.insert(0, "--no-filename".to_string());
+    }
+    let all = all || extra_args.iter().any(|a| a == "--all");
+    extra_args.retain(|a| a != "--all");
+    (all, extra_args)
+}
+
 /// Merge pnpm global filters args with other ones for standard String-based commands
 fn merge_pnpm_args(filters: &[String], args: &[String]) -> Vec<String> {
     filters
@@ -1939,19 +1957,9 @@ fn run_cli() -> Result<i32> {
             no_filename,
             all,
             help: _, // ArgAction::Help handles --help; field is unused
-            mut extra_args,
+            extra_args,
         } => {
-            // `-h`/`--no-filename` is parsed as a flag (so it works in any
-            // position, not just trailing), then re-injected into extra_args so
-            // grep_cmd forwards it to grep/rg and passes the output through.
-            if no_filename {
-                extra_args.insert(0, "--no-filename".to_string());
-            }
-            // The "+N more — use --all" hint invites appending `--all` after the
-            // pattern, where trailing_var_arg sweeps it into extra_args (and on to
-            // rg, which rejects it). Interpret it on the bdo side instead.
-            let all = all || extra_args.iter().any(|a| a == "--all");
-            extra_args.retain(|a| a != "--all");
+            let (all, extra_args) = normalize_grep_args(no_filename, all, extra_args);
             // `--all` lifts every cap; grep_cmd treats usize::MAX as "no limit"
             // (including the per-file cap).
             let max = if all { usize::MAX } else { max };
@@ -2753,6 +2761,37 @@ mod tests {
         assert!(!changed);
         assert_eq!(against, None);
         assert_eq!(cmd, sv(&["cargo", "test", "--", "foo"]));
+    }
+
+    // grep's `-h` re-injection and trailing `--all` recovery.
+    #[test]
+    fn test_normalize_grep_no_filename_injected() {
+        let (all, args) = normalize_grep_args(true, false, sv(&["-i"]));
+        assert!(!all);
+        assert_eq!(args, sv(&["--no-filename", "-i"]));
+    }
+
+    #[test]
+    fn test_normalize_grep_trailing_all_recovered() {
+        // Regression: `bdo grep pat path --all` sweeps --all into extra_args.
+        let (all, args) = normalize_grep_args(false, false, sv(&["-i", "--all"]));
+        assert!(all);
+        assert!(!args.iter().any(|a| a == "--all"), "must not forward --all to rg");
+        assert_eq!(args, sv(&["-i"]));
+    }
+
+    #[test]
+    fn test_normalize_grep_clap_all_flag() {
+        let (all, args) = normalize_grep_args(false, true, sv(&["-w"]));
+        assert!(all);
+        assert_eq!(args, sv(&["-w"]));
+    }
+
+    #[test]
+    fn test_normalize_grep_plain_args_untouched() {
+        let (all, args) = normalize_grep_args(false, false, sv(&["-A", "2"]));
+        assert!(!all);
+        assert_eq!(args, sv(&["-A", "2"]));
     }
 
     #[test]
