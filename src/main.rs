@@ -1718,14 +1718,41 @@ fn run_cli() -> Result<i32> {
         Commands::Test {
             changed,
             against,
-            mut command,
+            command,
         } => {
-            // `--changed` may be swept into `command` by trailing_var_arg; honor it
-            // either way and strip it out.
-            let changed = changed || command.iter().any(|a| a == "--changed");
-            command.retain(|a| a != "--changed");
+            // trailing_var_arg sweeps `--changed`/`--against` into `command` when
+            // they trail the test command, so recover both (consuming --against's
+            // value) and keep the rest as the literal command.
+            let mut changed = changed;
+            let mut against = against;
+            let mut rest: Vec<String> = Vec::new();
+            let mut it = command.into_iter();
+            while let Some(arg) = it.next() {
+                match arg.as_str() {
+                    "--changed" => changed = true,
+                    "--against" => {
+                        let val = it.next();
+                        if against.is_none() {
+                            against = val;
+                        }
+                    }
+                    s if s.starts_with("--against=") => {
+                        if against.is_none() {
+                            against = Some(s["--against=".len()..].to_string());
+                        }
+                    }
+                    _ => rest.push(arg),
+                }
+            }
+            let command = rest;
             if changed {
                 use core::changes;
+                if !command.is_empty() {
+                    eprintln!(
+                        "bdo test --changed: ignoring command args {:?} (targets are derived from the change set)",
+                        command
+                    );
+                }
                 if !changes::in_git_repo() {
                     anyhow::bail!("bdo test --changed: not inside a git repository");
                 }
