@@ -29,7 +29,9 @@ fn read_stdin_limited() -> Result<String> {
 
 /// Format detected from the preToolUse JSON input.
 enum HookFormat {
-    /// VS Code Copilot Chat / Claude Code: `tool_name` + `tool_input.command`, supports `updatedInput`.
+    /// Claude/Cursor-style snake_case input (`tool_name` + `tool_input.command`),
+    /// answered with `hookSpecificOutput.updatedInput`. Accepted as a fallback —
+    /// GitHub Copilot itself only ever sends the CopilotCli (camelCase) format.
     VsCode { command: String },
     /// GitHub Copilot CLI: camelCase `toolName` + `toolArgs` (JSON string), supports `modifiedArgs` for transparent rewrite.
     /// Carries the full parsed `toolArgs` object so we can rewrite `command` while preserving
@@ -233,7 +235,7 @@ pub fn run_gemini() -> Result<()> {
     let tool_name = json.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
 
     if tool_name != "run_shell_command" {
-        print_allow();
+        print_gemini_allow();
         return Ok(());
     }
 
@@ -243,7 +245,7 @@ pub fn run_gemini() -> Result<()> {
         .unwrap_or("");
 
     if cmd.is_empty() {
-        print_allow();
+        print_gemini_allow();
         return Ok(());
     }
 
@@ -254,34 +256,40 @@ pub fn run_gemini() -> Result<()> {
                 r#"{{"decision":"deny","reason":"Blocked by Bushido permission rule"}}"#
             );
         }
+        // Gemini's BeforeTool only documents `deny`/`block` (absent = allow); it
+        // has no `allow`/`ask_user` value. So for a rewrite we omit `decision`
+        // and merge the new command via `hookSpecificOutput.tool_input`.
         HookDecision::AllowRewrite(ref rewritten) => {
             audit_log("rewrite", cmd, rewritten);
-            print_gemini("allow", Some(rewritten));
+            print_gemini_rewrite(rewritten);
         }
         HookDecision::AskRewrite(ref rewritten) => {
             audit_log("ask", cmd, rewritten);
-            print_gemini("ask_user", Some(rewritten));
+            print_gemini_rewrite(rewritten);
         }
-        HookDecision::Defer => print_gemini("ask_user", None),
+        HookDecision::Defer => print_gemini_allow(),
     }
 
     Ok(())
 }
 
-fn print_allow() {
-    let _ = writeln!(io::stdout(), r#"{{"decision":"allow"}}"#);
+/// Gemini "allow": empty JSON. An absent `decision` means permission; only
+/// `deny`/`block` are valid action values, so we never emit `allow`/`ask_user`.
+fn print_gemini_allow() {
+    let _ = writeln!(io::stdout(), "{{}}");
 }
 
-fn gemini_json(decision: &str, rewrite: Option<&str>) -> String {
-    let mut output = serde_json::json!({ "decision": decision });
-    if let Some(cmd) = rewrite {
-        output["hookSpecificOutput"] = serde_json::json!({ "tool_input": { "command": cmd } });
-    }
-    output.to_string()
+/// Gemini allow + rewrite: merge a new command via `hookSpecificOutput.tool_input`
+/// (no `decision` — absent means allow).
+fn print_gemini_rewrite(rewritten: &str) {
+    let _ = writeln!(io::stdout(), "{}", gemini_rewrite_json(rewritten));
 }
 
-fn print_gemini(decision: &str, rewrite: Option<&str>) {
-    let _ = writeln!(io::stdout(), "{}", gemini_json(decision, rewrite));
+fn gemini_rewrite_json(rewritten: &str) -> String {
+    serde_json::json!({
+        "hookSpecificOutput": { "tool_input": { "command": rewritten } }
+    })
+    .to_string()
 }
 
 // ── Audit logging ─────────────────────────────────────────────
@@ -822,26 +830,20 @@ mod tests {
 
     // --- Gemini format ---
 
+    // Gemini's BeforeTool documents only `deny`/`block` (absent = allow); it has
+    // no `allow`/`ask_user`. Allow must be empty JSON, rewrites omit `decision`.
     #[test]
-    fn test_print_allow_format() {
-        let expected = r#"{"decision":"allow"}"#;
-        assert_eq!(expected, r#"{"decision":"allow"}"#);
+    fn test_gemini_allow_has_no_decision() {
+        let v: Value = serde_json::from_str("{}").unwrap();
+        assert!(v.get("decision").is_none());
     }
 
     #[test]
-    fn test_print_rewrite_format() {
-        let output = serde_json::json!({
-            "decision": "allow",
-            "hookSpecificOutput": {
-                "tool_input": {
-                    "command": "bdo git status"
-                }
-            }
-        });
-        let json: Value = serde_json::from_str(&output.to_string()).unwrap();
-        assert_eq!(json["decision"], "allow");
+    fn test_gemini_rewrite_json_omits_decision_and_merges_command() {
+        let v: Value = serde_json::from_str(&gemini_rewrite_json("bdo git status")).unwrap();
+        assert!(v.get("decision").is_none(), "rewrite must not set a decision");
         assert_eq!(
-            json["hookSpecificOutput"]["tool_input"]["command"],
+            v["hookSpecificOutput"]["tool_input"]["command"],
             "bdo git status"
         );
     }
@@ -1346,9 +1348,9 @@ mod tests {
             HookDecision::Deny => {
                 r#"{"decision":"deny","reason":"Blocked by Bushido permission rule"}"#.to_string()
             }
-            HookDecision::AllowRewrite(r) => gemini_json("allow", Some(&r)),
-            HookDecision::AskRewrite(r) => gemini_json("ask_user", Some(&r)),
-            HookDecision::Defer => gemini_json("ask_user", None),
+            // Gemini has no allow/ask value: rewrite via tool_input (no decision).
+            HookDecision::AllowRewrite(r) | HookDecision::AskRewrite(r) => gemini_rewrite_json(&r),
+            HookDecision::Defer => "{}".to_string(),
         }
     }
 
@@ -1356,7 +1358,7 @@ mod tests {
     fn test_gemini_allow_emits_rewrite() {
         let v: Value =
             serde_json::from_str(&gemini_render("git status", &[], &[], &all_allowed())).unwrap();
-        assert_eq!(v["decision"], "allow");
+        assert!(v.get("decision").is_none());
         assert_eq!(
             v["hookSpecificOutput"]["tool_input"]["command"],
             "bdo git status"
@@ -1364,13 +1366,18 @@ mod tests {
     }
 
     #[test]
-    fn test_gemini_default_asks_user() {
+    fn test_gemini_default_rewrites_without_decision() {
+        // The "ask" path also rewrites with no decision (Gemini has no ask value).
         let v: Value = serde_json::from_str(&gemini_render("git status", &[], &[], &[])).unwrap();
-        assert_eq!(v["decision"], "ask_user");
+        assert!(v.get("decision").is_none());
+        assert_eq!(
+            v["hookSpecificOutput"]["tool_input"]["command"],
+            "bdo git status"
+        );
     }
 
     #[test]
-    fn test_gemini_substitution_asks_user_without_rewrite() {
+    fn test_gemini_defer_allows_without_rewrite() {
         let v: Value = serde_json::from_str(&gemini_render(
             "git status `rm -rf /tmp/x`",
             &[],
@@ -1378,7 +1385,7 @@ mod tests {
             &all_allowed(),
         ))
         .unwrap();
-        assert_eq!(v["decision"], "ask_user");
+        assert!(v.get("decision").is_none());
         assert!(v.get("hookSpecificOutput").is_none());
     }
 
