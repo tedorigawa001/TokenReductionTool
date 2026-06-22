@@ -2136,44 +2136,76 @@ fn run_codex_mode_with_paths(
         }
     }
 
-    // ISSUE #892: In global mode, use absolute path so @Bushido.md resolves
-    // from any CWD (worktrees, nested projects). Codex resolves @ references
-    // relative to CWD, not the AGENTS.md file location.
-    let rtk_md_ref = if global {
-        codex_rtk_md_ref(
-            rtk_md_path
-                .parent()
-                .context("Bushido.md path missing parent directory")?,
-        )
+    // Codex CLI has NO `@import` syntax (unlike Claude Code): it reads AGENTS.md
+    // content directly. So inline the instructions as a marked block instead of
+    // an `@Bushido.md` reference (which Codex would treat as literal text), and
+    // migrate any legacy `@Bushido.md` line + separate Bushido.md away.
+    let original = if agents_md_path.exists() {
+        fs::read_to_string(&agents_md_path)
+            .with_context(|| format!("Failed to read AGENTS.md: {}", agents_md_path.display()))?
     } else {
-        BDO_MD_REF.to_string()
+        String::new()
     };
 
-    write_if_changed(&rtk_md_path, BDO_SLIM_CODEX, BDO_MD, ctx)?;
-    let added_ref = patch_agents_md(&agents_md_path, &rtk_md_ref, ctx)?;
+    let stripped = strip_codex_at_refs(&original);
+    let block = format!(
+        "{} -->\n{}\n{}",
+        BDO_BLOCK_START,
+        BDO_SLIM_CODEX.trim(),
+        BDO_BLOCK_END
+    );
+    let (new_content, action) = upsert_rtk_block(&stripped, &block);
+    if matches!(action, RtkBlockUpsert::Malformed) {
+        anyhow::bail!(
+            "AGENTS.md has an unterminated bdo-instructions block: {}",
+            agents_md_path.display()
+        );
+    }
 
-    if !dry_run {
-        println!("\nRTK configured for Codex CLI.\n");
-        println!("  Bushido.md:    {}", rtk_md_path.display());
-        if added_ref {
-            println!("  AGENTS.md: {} reference added", rtk_md_ref);
-        } else {
-            println!("  AGENTS.md: {} reference already present", rtk_md_ref);
-        }
-        if global {
+    if new_content != original {
+        if dry_run {
             println!(
-                "\n  Codex global instructions path: {}",
+                "[dry-run] would write inline bdo instructions to {}",
                 agents_md_path.display()
             );
         } else {
-            println!(
-                "\n  Codex project instructions path: {}",
-                agents_md_path.display()
-            );
+            atomic_write(&agents_md_path, &new_content)
+                .with_context(|| format!("Failed to write AGENTS.md: {}", agents_md_path.display()))?;
         }
     }
 
+    // Remove the now-unused separate Bushido.md from the old @import layout.
+    if rtk_md_path.exists() && !dry_run {
+        let _ = fs::remove_file(&rtk_md_path);
+    }
+
+    if !dry_run {
+        let state = match action {
+            RtkBlockUpsert::Added => "added",
+            RtkBlockUpsert::Updated => "updated",
+            RtkBlockUpsert::Unchanged => "already current",
+            RtkBlockUpsert::Malformed => "error",
+        };
+        println!("\nBushido configured for Codex CLI (inline AGENTS.md instructions).\n");
+        println!("  AGENTS.md:     {}", agents_md_path.display());
+        println!("  Instructions:  {}", state);
+        println!("\n  Restart Codex CLI to apply.");
+    }
+
     Ok(())
+}
+
+/// Drop legacy `@Bushido.md` reference lines (relative or absolute). Codex CLI
+/// has no `@import`, so these lines were inert text — replaced by an inline block.
+fn strip_codex_at_refs(content: &str) -> String {
+    content
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            !(t.starts_with('@') && t.ends_with("Bushido.md"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // --- upsert_rtk_block: idempotent Bushido block management ---
@@ -2383,93 +2415,6 @@ fn patch_claude_md(path: &Path, ctx: InitContext) -> Result<bool> {
     }
 
     Ok(migrated)
-}
-
-/// Patch AGENTS.md: add @Bushido.md (or absolute path), migrate old inline block if present
-fn patch_agents_md(path: &Path, rtk_md_ref: &str, ctx: InitContext) -> Result<bool> {
-    let InitContext { verbose, dry_run } = ctx;
-    let mut content = if path.exists() {
-        fs::read_to_string(path)
-            .with_context(|| format!("Failed to read AGENTS.md: {}", path.display()))?
-    } else {
-        String::new()
-    };
-
-    let mut migrated = false;
-    if content.contains(BDO_BLOCK_START) {
-        let (new_content, did_migrate) = remove_rtk_block(&content);
-        if did_migrate {
-            content = new_content;
-            migrated = true;
-            if verbose > 0 {
-                eprintln!("Migrated: removed old Bushido block from AGENTS.md");
-            }
-        }
-    }
-
-    // ISSUE #892: Check for both relative and absolute @Bushido.md references
-    if content.contains(BDO_MD_REF) || content.contains(rtk_md_ref) {
-        if verbose > 0 {
-            eprintln!("{} reference already present in AGENTS.md", rtk_md_ref);
-        }
-        // ISSUE #892: Migrate old relative @Bushido.md to absolute path if needed
-        if rtk_md_ref != BDO_MD_REF && content.contains(BDO_MD_REF) && !content.contains(rtk_md_ref)
-        {
-            content = content.replace(BDO_MD_REF, rtk_md_ref);
-            if dry_run {
-                println!(
-                    "[dry-run] would migrate {} to {} in {}",
-                    BDO_MD_REF,
-                    rtk_md_ref,
-                    path.display()
-                );
-            } else {
-                atomic_write(path, &content)
-                    .with_context(|| format!("Failed to write AGENTS.md: {}", path.display()))?;
-                if verbose > 0 {
-                    eprintln!("Migrated {} to {}", BDO_MD_REF, rtk_md_ref);
-                }
-            }
-            return Ok(true);
-        }
-        if migrated {
-            if dry_run {
-                println!(
-                    "[dry-run] would write migrated AGENTS.md: {}",
-                    path.display()
-                );
-            } else {
-                atomic_write(path, &content)
-                    .with_context(|| format!("Failed to write AGENTS.md: {}", path.display()))?;
-            }
-        }
-        return Ok(false);
-    }
-
-    let new_content = if content.is_empty() {
-        format!("{}\n", rtk_md_ref)
-    } else {
-        format!("{}\n\n{}\n", content.trim(), rtk_md_ref)
-    };
-
-    if dry_run {
-        println!(
-            "[dry-run] would add {} reference to AGENTS.md: {}",
-            rtk_md_ref,
-            path.display()
-        );
-        if verbose > 0 {
-            println!("[dry-run] content:\n{}", new_content);
-        }
-    } else {
-        atomic_write(path, &new_content)
-            .with_context(|| format!("Failed to write AGENTS.md: {}", path.display()))?;
-        if verbose > 0 {
-            eprintln!("Added {} reference to AGENTS.md", rtk_md_ref);
-        }
-    }
-
-    Ok(true)
 }
 
 fn has_rtk_reference(content: &str, refs: &[&str]) -> bool {
@@ -4209,22 +4154,6 @@ mod tests {
     }
 
     #[test]
-    fn test_patch_agents_md_adds_reference_once() {
-        let temp = TempDir::new().unwrap();
-        let agents_md = temp.path().join("AGENTS.md");
-
-        fs::write(&agents_md, "# Team rules\n").unwrap();
-        let first_added = patch_agents_md(&agents_md, BDO_MD_REF, InitContext::default()).unwrap();
-        let second_added = patch_agents_md(&agents_md, BDO_MD_REF, InitContext::default()).unwrap();
-
-        assert!(first_added);
-        assert!(!second_added);
-
-        let content = fs::read_to_string(&agents_md).unwrap();
-        assert_eq!(content.matches("@Bushido.md").count(), 1);
-    }
-
-    #[test]
     fn test_codex_mode_rejects_auto_patch() {
         let err = run(
             false,
@@ -4266,6 +4195,41 @@ mod tests {
             err.to_string(),
             "--codex cannot be combined with --no-patch"
         );
+    }
+
+    #[test]
+    fn test_strip_codex_at_refs() {
+        let c = "# rules\n@Bushido.md\n@/Users/x/.codex/Bushido.md\nkeep me\n";
+        let out = strip_codex_at_refs(c);
+        assert!(!out.contains("@Bushido.md"));
+        assert!(out.contains("# rules"));
+        assert!(out.contains("keep me"));
+    }
+
+    // Codex has no @import, so codex mode inlines the instructions as a marker
+    // block and migrates any legacy `@Bushido.md` reference + separate file.
+    #[test]
+    fn test_codex_inline_migrates_at_ref_to_block() {
+        let temp = TempDir::new().unwrap();
+        let agents = temp.path().join("AGENTS.md");
+        let bushido = temp.path().join("Bushido.md");
+        fs::write(&agents, "# Team rules\n\n@/abs/path/Bushido.md\n").unwrap();
+        fs::write(&bushido, "stale separate file").unwrap();
+
+        run_codex_mode_with_paths(agents.clone(), bushido.clone(), true, InitContext::default())
+            .unwrap();
+
+        let content = fs::read_to_string(&agents).unwrap();
+        assert!(content.contains(BDO_BLOCK_START), "inline block added: {content}");
+        assert!(content.contains(BDO_BLOCK_END));
+        assert!(!content.contains("@/abs/path/Bushido.md"), "legacy @ref removed");
+        assert!(content.contains("# Team rules"), "user content preserved");
+        assert!(!bushido.exists(), "legacy separate Bushido.md removed");
+
+        // Idempotent: a second run leaves the file unchanged.
+        run_codex_mode_with_paths(agents.clone(), bushido.clone(), true, InitContext::default())
+            .unwrap();
+        assert_eq!(content, fs::read_to_string(&agents).unwrap());
     }
 
     #[test]
@@ -4316,39 +4280,6 @@ mod tests {
         run_antigravity_mode_at(temp.path(), InitContext::default()).unwrap();
         let second = fs::read_to_string(&path).unwrap();
         assert_eq!(first, second, "Idempotent: content should not change");
-    }
-
-    #[test]
-    fn test_patch_agents_md_creates_missing_file() {
-        let temp = TempDir::new().unwrap();
-        let agents_md = temp.path().join("AGENTS.md");
-
-        let added = patch_agents_md(&agents_md, BDO_MD_REF, InitContext::default()).unwrap();
-
-        assert!(added);
-        let content = fs::read_to_string(&agents_md).unwrap();
-        assert_eq!(content, "@Bushido.md\n");
-    }
-
-    #[test]
-    fn test_patch_agents_md_migrates_inline_block() {
-        let temp = TempDir::new().unwrap();
-        let agents_md = temp.path().join("AGENTS.md");
-        fs::write(
-            &agents_md,
-            format!(
-                "# Team rules\n\n{} v2 -->\nold\n{}\n",
-                BDO_BLOCK_START, BDO_BLOCK_END
-            ),
-        )
-        .unwrap();
-
-        let added = patch_agents_md(&agents_md, BDO_MD_REF, InitContext::default()).unwrap();
-
-        assert!(added);
-        let content = fs::read_to_string(&agents_md).unwrap();
-        assert!(!content.contains("old"));
-        assert_eq!(content.matches("@Bushido.md").count(), 1);
     }
 
     #[test]
@@ -4836,7 +4767,7 @@ mod tests {
     }
 
     #[test]
-    fn test_run_codex_mode_global_writes_absolute_reference_to_codex_dir() {
+    fn test_run_codex_mode_global_inlines_instructions() {
         let temp = TempDir::new().unwrap();
         let agents_md = temp.path().join("AGENTS.md");
         let rtk_md = temp.path().join("Bushido.md");
@@ -4849,12 +4780,13 @@ mod tests {
         )
         .unwrap();
 
-        assert!(rtk_md.exists());
-        assert_eq!(fs::read_to_string(&rtk_md).unwrap(), BDO_SLIM_CODEX);
-        assert_eq!(
-            fs::read_to_string(&agents_md).unwrap(),
-            format!("{}\n", codex_rtk_md_ref(temp.path()))
-        );
+        // Codex has no @import: instructions are inlined into AGENTS.md as a
+        // marker block, and no separate Bushido.md is written.
+        assert!(!rtk_md.exists(), "no separate Bushido.md");
+        let agents = fs::read_to_string(&agents_md).unwrap();
+        assert!(agents.contains(BDO_BLOCK_START) && agents.contains(BDO_BLOCK_END));
+        assert!(agents.contains(BDO_SLIM_CODEX.trim()));
+        assert!(!agents.contains('@'), "no @import reference");
     }
 
     #[test]
