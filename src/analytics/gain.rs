@@ -26,6 +26,7 @@ pub fn run(
     failures: bool,
     reset: bool,
     yes: bool,
+    by_agent: bool,
     _verbose: u8,
 ) -> Result<()> {
     let tracker = Tracker::new().context("Failed to initialize tracking database")?;
@@ -230,6 +231,29 @@ pub fn run(
             }
             println!("{}", "─".repeat(table_width));
             println!();
+        }
+
+        if by_agent {
+            let agents = tracker.get_by_agent(project_scope.as_deref())?;
+            if !agents.is_empty() {
+                println!("{}", styled("By Agent", true));
+                println!("{}", "─".repeat(60));
+                for (agent, count, saved, pct) in &agents {
+                    let name = if agent.is_empty() {
+                        "(other/direct)"
+                    } else {
+                        agent.as_str()
+                    };
+                    println!(
+                        "  {:<16} {:>6} cmds   {:>9} saved   {:>6}",
+                        name,
+                        count,
+                        format_tokens(*saved),
+                        format!("{pct:.1}%")
+                    );
+                }
+                println!();
+            }
         }
 
         if graph && !summary.by_day.is_empty() {

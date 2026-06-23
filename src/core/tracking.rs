@@ -48,6 +48,33 @@ fn current_project_path_string() -> String {
         .unwrap_or_default()
 }
 
+/// Best-effort detection of the AI agent that invoked bdo, for `bdo gain
+/// --by-agent` attribution. An explicit `BDO_AGENT` wins; otherwise sniff the
+/// agent's ambient env vars (the rewritten command inherits them). Returns an
+/// empty string for "unknown / direct" (e.g. a human shell). No command or hook
+/// changes needed — the agents already export these.
+pub fn detect_agent() -> String {
+    if let Ok(a) = std::env::var("BDO_AGENT") {
+        let a = a.trim();
+        if !a.is_empty() {
+            return a.to_string();
+        }
+    }
+    let has_prefix =
+        |p: &str| std::env::vars_os().any(|(k, _)| k.to_string_lossy().starts_with(p));
+    if std::env::var("CLAUDECODE").is_ok() || has_prefix("CLAUDE_CODE") {
+        "claude".to_string()
+    } else if has_prefix("GEMINI_CLI") {
+        "gemini".to_string()
+    } else if has_prefix("CURSOR") {
+        "cursor".to_string()
+    } else if has_prefix("GH_COPILOT") || has_prefix("COPILOT") {
+        "copilot".to_string()
+    } else {
+        String::new()
+    }
+}
+
 /// Build SQL filter params for project-scoped queries.
 /// Returns (exact_match, glob_prefix) for WHERE clause.
 /// Uses GLOB instead of LIKE to avoid `_` and `%` in paths acting as wildcards. // changed: GLOB
@@ -288,6 +315,9 @@ impl Tracker {
             "ALTER TABLE commands ADD COLUMN project_path TEXT DEFAULT ''",
             [],
         );
+        // Migration: add agent column (which AI agent invoked bdo) for per-agent
+        // gain attribution; DEFAULT '' (= unknown/direct) for pre-existing rows.
+        let _ = conn.execute("ALTER TABLE commands ADD COLUMN agent TEXT DEFAULT ''", []);
         // One-time migration: normalize NULLs from pre-default schema // changed: guarded with EXISTS
         let has_nulls: bool = conn
             .query_row(
@@ -348,7 +378,8 @@ impl Tracker {
                 saved_tokens INTEGER NOT NULL,
                 savings_pct REAL NOT NULL,
                 exec_time_ms INTEGER DEFAULT 0,
-                project_path TEXT DEFAULT ''
+                project_path TEXT DEFAULT '',
+                agent TEXT DEFAULT ''
             )",
             [],
         )?;
@@ -415,15 +446,17 @@ impl Tracker {
         };
 
         let project_path = current_project_path_string(); // added: record cwd
+        let agent = detect_agent(); // which AI agent invoked bdo (best-effort)
 
         self.conn.execute(
-            "INSERT INTO commands (timestamp, original_cmd, rtk_cmd, project_path, input_tokens, output_tokens, saved_tokens, savings_pct, exec_time_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)", // added: project_path
+            "INSERT INTO commands (timestamp, original_cmd, rtk_cmd, project_path, agent, input_tokens, output_tokens, saved_tokens, savings_pct, exec_time_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)", // added: agent
             params![
                 Utc::now().to_rfc3339(),
                 original_cmd,
                 rtk_cmd,
                 project_path, // added
+                agent,        // added
                 input_tokens as i64,
                 output_tokens as i64,
                 saved as i64,
@@ -652,6 +685,34 @@ impl Tracker {
                 row.get::<_, i64>(2)? as usize,
                 row.get::<_, f64>(3)?,
                 row.get::<_, f64>(4)? as u64,
+            ))
+        })?;
+
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Per-agent savings breakdown: `(agent, count, saved_tokens, avg_savings_pct)`,
+    /// ordered by tokens saved. An empty agent string means unknown/direct.
+    pub fn get_by_agent(
+        &self,
+        project_path: Option<&str>,
+    ) -> Result<Vec<(String, usize, usize, f64)>> {
+        let (project_exact, project_glob) = project_filter_params(project_path);
+        let mut stmt = self.conn.prepare(
+            "SELECT agent, COUNT(*), SUM(saved_tokens), AVG(savings_pct)
+             FROM commands
+             WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
+             GROUP BY agent
+             ORDER BY SUM(saved_tokens) DESC",
+        )?;
+
+        let rows = stmt.query_map(params![project_exact, project_glob], |row| {
+            Ok((
+                // Pre-`agent` rows may store NULL; treat as unknown (empty).
+                row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                row.get::<_, i64>(1)? as usize,
+                row.get::<_, i64>(2)? as usize,
+                row.get::<_, f64>(3)?,
             ))
         })?;
 
@@ -1510,6 +1571,20 @@ mod tests {
 
         // This validates that passthrough (0 input, 0 output) doesn't dilute stats
         // because the savings calculation is correct for both cases
+    }
+
+    // get_by_agent groups rows and sums saved tokens. Both records get the same
+    // (env-derived) agent, so they collapse into a single group of 2 — stable
+    // regardless of the concrete agent value.
+    #[test]
+    fn test_get_by_agent_groups_and_sums() {
+        let tracker = Tracker::new_in_memory().unwrap();
+        tracker.record("a", "bdo a", 1000, 100, 5).unwrap();
+        tracker.record("b", "bdo b", 1000, 100, 5).unwrap();
+        let rows = tracker.get_by_agent(None).unwrap();
+        assert_eq!(rows.len(), 1, "one agent group");
+        assert_eq!(rows[0].1, 2, "count");
+        assert_eq!(rows[0].2, 1800, "summed saved tokens (2 × 900)");
     }
 
     // 5. TimedExecution::track records with exec_time > 0

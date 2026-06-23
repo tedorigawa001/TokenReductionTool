@@ -489,6 +489,9 @@ enum Commands {
         /// Skip confirmation prompt when resetting
         #[arg(long, requires = "reset")]
         yes: bool,
+        /// Break savings down by AI agent (claude/gemini/copilot/cursor)
+        #[arg(long)]
+        by_agent: bool,
     },
 
     /// Claude Code economics: spending (ccusage) vs savings (bdo) analysis
@@ -2114,6 +2117,7 @@ fn run_cli() -> Result<i32> {
             failures,
             reset,
             yes,
+            by_agent,
         } => {
             analytics::gain::run(
                 project, // added: pass project flag
@@ -2129,6 +2133,7 @@ fn run_cli() -> Result<i32> {
                 failures,
                 reset,
                 yes,
+                by_agent,
                 cli.verbose,
             )?;
             0

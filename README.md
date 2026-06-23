@@ -338,6 +338,7 @@ bdo gain                        # Summary stats
 bdo gain --graph                # ASCII graph (last 30 days)
 bdo gain --history              # Recent command history
 bdo gain --daily                # Day-by-day breakdown
+bdo gain --by-agent             # Savings split by AI agent (claude/gemini/copilot/…)
 bdo gain --all --format json    # JSON export for dashboards
 
 bdo discover                    # Find missed savings opportunities
@@ -345,6 +346,11 @@ bdo discover --all --since 7    # All projects, last 7 days
 
 bdo session                     # Show Bushido adoption across recent sessions
 ```
+
+`--by-agent` attributes each command to the AI agent that ran it — auto-detected
+from the agent's environment (Claude Code, Gemini CLI, Copilot, Cursor), or set
+explicitly via `BDO_AGENT=<name>`. Commands with no detectable agent show as
+`(other/direct)`.
 
 ## Global Flags
 
