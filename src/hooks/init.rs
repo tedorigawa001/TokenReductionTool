@@ -1151,7 +1151,7 @@ fn run_default_mode(
 
     // 3. Print success message (skip in dry-run)
     if !dry_run {
-        println!("\nRTK hook registered (global).\n");
+        println!("\nBushido hook registered (global).\n");
         println!("  Command:   {}", CLAUDE_HOOK_COMMAND);
         println!("  Bushido.md:    {} (10 lines)", rtk_md_path.display());
         if let Some(path) = &opencode_plugin_path {
@@ -1292,7 +1292,7 @@ fn run_hook_only_mode(
     };
 
     if !dry_run {
-        println!("\nRTK hook registered (hook-only mode).\n");
+        println!("\nBushido hook registered (hook-only mode).\n");
         println!("  Command: {}", CLAUDE_HOOK_COMMAND);
         if let Some(path) = &opencode_plugin_path {
             println!("  OpenCode: {}", path.display());
@@ -1436,7 +1436,7 @@ fn run_cline_mode(ctx: InitContext) -> Result<()> {
                 eprintln!("Wrote .clinerules");
             }
 
-            println!("\nRTK configured for Cline.\n");
+            println!("\nBushido configured for Cline.\n");
             println!("  Rules: .clinerules (installed)");
         }
     }
@@ -1481,7 +1481,7 @@ fn run_windsurf_mode(ctx: InitContext) -> Result<()> {
                 eprintln!("Wrote .windsurfrules");
             }
 
-            println!("\nRTK configured for Windsurf Cascade.\n");
+            println!("\nBushido configured for Windsurf Cascade.\n");
             println!("  Rules: .windsurfrules (installed)");
         }
     }
@@ -1537,7 +1537,7 @@ fn run_kilocode_mode_at(base_dir: &Path, ctx: InitContext) -> Result<()> {
                 eprintln!("Wrote .kilocode/rules/bdo-rules.md");
             }
 
-            println!("\nRTK configured for Kilo Code.\n");
+            println!("\nBushido configured for Kilo Code.\n");
             println!("  Rules: .kilocode/rules/bdo-rules.md (installed)");
         }
     }
@@ -1594,7 +1594,7 @@ fn run_antigravity_mode_at(base_dir: &Path, ctx: InitContext) -> Result<()> {
                 eprintln!("Wrote .agents/rules/antigravity-bdo-rules.md");
             }
 
-            println!("\nRTK configured for Google Antigravity.\n");
+            println!("\nBushido configured for Google Antigravity.\n");
             println!("  Rules: .agents/rules/antigravity-bdo-rules.md (installed)");
         }
     }
@@ -1659,7 +1659,7 @@ fn run_hermes_mode_at(hermes_home: &Path, ctx: InitContext) -> Result<()> {
     if dry_run {
         print_dry_run_footer();
     } else {
-        println!("\nRTK configured for Hermes.\n");
+        println!("\nBushido configured for Hermes.\n");
         println!("  Plugin: {}", plugin_dir.display());
         println!("  Config: {}", config_path.display());
         println!("  Hermes will now rewrite terminal commands through rtk.");
