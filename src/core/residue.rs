@@ -2,6 +2,19 @@
 //! strings (legacy names, broken install URLs). Used by `bdo review` (scoped to
 //! the change set) and `bdo stale` (whole tracked tree).
 
+use std::path::Path;
+
+/// Load `.bdostaleignore` (gitignore-style globs) from the repo root, if present.
+/// Files it matches are skipped by both `bdo stale` and `bdo review` — for files
+/// that legitimately *document* residue (a changelog, a rename ledger). Absent or
+/// unparseable → an empty matcher (nothing ignored).
+pub fn load_ignore(root: &Path) -> ignore::gitignore::Gitignore {
+    let mut b = ignore::gitignore::GitignoreBuilder::new(root);
+    let _ = b.add(root.join(".bdostaleignore")); // Some(err) on read failure — ignore
+    b.build()
+        .unwrap_or_else(|_| ignore::gitignore::Gitignore::empty())
+}
+
 /// Generated/junk path fragments that usually should not be committed.
 /// `(fragment, label)` — directory fragments (ending `/`) match only as a full
 /// path segment; the rest match as a substring.
@@ -105,5 +118,26 @@ mod tests {
     #[test]
     fn test_scan_stale_clean_content() {
         assert!(scan_stale("a perfectly normal file\nwith no residue\n").is_empty());
+    }
+
+    #[test]
+    fn test_load_ignore_matches_listed_globs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".bdostaleignore"),
+            "CHANGELOG.md\ndocs/*.md\n",
+        )
+        .unwrap();
+        let ig = load_ignore(dir.path());
+        assert!(ig.matched("CHANGELOG.md", false).is_ignore());
+        assert!(ig.matched("docs/notes.md", false).is_ignore());
+        assert!(!ig.matched("src/main.rs", false).is_ignore());
+    }
+
+    #[test]
+    fn test_load_ignore_absent_file_ignores_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let ig = load_ignore(dir.path());
+        assert!(!ig.matched("CHANGELOG.md", false).is_ignore());
     }
 }

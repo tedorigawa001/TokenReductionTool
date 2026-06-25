@@ -312,6 +312,15 @@ fn outline_braces(content: &str, rust: bool, collapse_all: bool) -> String {
                     out.push('\n');
                     header.clear();
                 } else if code.ends_with('}') {
+                    if code.contains('{') {
+                        // One-line block (`pub fn f() {}`, `impl T {}`): the `{`…`}`
+                        // opened and closed on this line nets to delta 0, so the
+                        // `delta > 0` branch above never saw it. Collapse it to a
+                        // signature like that branch would, so map doesn't drop it.
+                        let head = header.split('{').next().unwrap_or(&header);
+                        out.push_str(&compact_signature(head));
+                        out.push_str(" { … }\n");
+                    }
                     header.clear();
                 }
             }
@@ -567,6 +576,29 @@ pub fn multi(
         // The whole signature is exactly one line (no leftover param lines).
         assert_eq!(o.trim(), "pub fn multi(a: T, b: U) -> Result<StreamResult> { … }");
         assert_eq!(o.lines().count(), 1, "must be a single line: {o:?}");
+    }
+
+    // One-line bodies (`pub fn f() {}`, `impl T {}`) open and close their block on
+    // a single line (net brace delta 0), so the `delta > 0` path never sees them.
+    // They must still surface in the map as a collapsed signature, not vanish.
+    #[test]
+    fn test_signatures_one_line_body_kept() {
+        let src = "\
+pub fn empty() {}
+pub fn one(a: u32) -> u32 { a }
+impl Marker {}
+pub fn after() -> u32 {
+    2
+}
+";
+        let o = signatures(src, &Language::Rust).unwrap();
+        assert!(o.contains("pub fn empty() { … }"), "empty one-liner: {o}");
+        assert!(o.contains("pub fn one(a: u32) -> u32 { … }"), "one-liner body: {o}");
+        assert!(o.contains("impl Marker { … }"), "one-line impl: {o}");
+        // The following multi-line fn must still be picked up (no state leak).
+        assert!(o.contains("pub fn after() -> u32 { … }"), "next decl intact: {o}");
+        // No stray body content leaks through.
+        assert!(!o.contains("a }"), "body elided: {o}");
     }
 
     // A top-level `const …; // comment` must not merge with the next decl: the

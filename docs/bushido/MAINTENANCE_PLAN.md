@@ -212,9 +212,11 @@ bash scripts/check-test-presence.sh
 ### ✅ 実装済み（0.43.0 で消化）
 `bdo review` / `bdo map --changed` / `bdo test --changed` / `bdo stale`（`.bdostaleignore` 対応）/ 検索系の欠落可視化（`find`/`grep` の `+N more`・`--all`）/ head・tail の raw 忠実化（`bdo read --raw-window` 相当）。
 
+### ✅ 追加実装済み（0.43.0 で消化・第2弾）
+- **変更系コマンドが `.bdostaleignore` を尊重**: `bdo review` の ARTIFACTS / STALE MARKERS 走査に `stale` と同じ ignore を適用。`load_stale_ignore` を `core::residue::load_ignore` に集約して共有。CHANGED 一覧は従来どおり全変更ファイルを表示（ignore は flag 抑制のみ）。テスト追加（`residue::load_ignore`）。
+- **`bdo map` の一行空ボディ署名化**: `pub fn f() {}` / `impl T {}` など同一行で開閉する block（net brace delta 0）を `outline_braces` の collapse_all 経路で署名化。`pub fn f() { … }` として map に出るよう修正。テスト追加（`test_signatures_one_line_body_kept`）。
+
 ### 新規候補（assistant の欲しい機能）
-- **変更系コマンドが `.bdostaleignore` を尊重**: 現状 `bdo review` は変更ファイルなら `CHANGELOG.md` の履歴行（`.config/rtk` 等）も flag する。`stale` と同じ ignore を `review`/`map`/`test` のマーカー走査にも適用し、履歴ファイルの偽陽性を消す（一貫性）。
-- **`bdo map` の一行空ボディ署名化**: `pub fn f() {}`（本体が同一行の空 `{}`）が collapse_all モードで署名化されず map に出ない。`outline` を修正して 1 行関数も `pub fn f() { … }` として拾う。
 - **`bdo test --changed` の多言語化**: 現状 Rust/cargo のみ。変更ファイルの拡張子で test runner を切替（`*.py`→pytest、`*.ts/tsx`→vitest/jest、`*.go`→go test）。
 - **`bdo ci`（統合ゲート）**: `bdo stale` + `bdo test --changed` + `bdo review` を 1 コマンドで実行し、単一 exit code を返す pre-merge/CI ゲート。
 - **`bdo stale` の docs↔impl コマンド名ズレ検出**: ドキュメント中の `bdo <cmd>` 参照のうち `bdo --help` に存在しないものを検出（元バックログの未実装分）。

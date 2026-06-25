@@ -6,8 +6,8 @@
 //! Scoped to the change set (working tree, or `--against <ref>`), not the whole
 //! repo — keeping the output small, in the spirit of the rest of bdo.
 
-use crate::core::changes::{changed_files, in_git_repo, rust_test_targets};
-use crate::core::residue::{artifact_reason, scan_stale};
+use crate::core::changes::{changed_files, in_git_repo, repo_root, rust_test_targets};
+use crate::core::residue::{artifact_reason, load_ignore, scan_stale};
 use crate::core::tracking;
 use anyhow::Result;
 
@@ -41,10 +41,21 @@ pub fn run(against: Option<&str>, verbose: u8) -> Result<()> {
         out.push_str(&format!("  {:<2} {}\n", c.status, c.path));
     }
 
+    // `.bdostaleignore` (rooted at the repo) suppresses residue flagging on files
+    // that legitimately *document* residue (changelogs, rename ledgers). It scopes
+    // ARTIFACTS + STALE MARKERS only — the CHANGED list above still shows them.
+    let ignore = repo_root().ok().map(|r| load_ignore(&r));
+    let is_ignored = |path: &str| {
+        ignore
+            .as_ref()
+            .is_some_and(|ig| ig.matched(path, false).is_ignore())
+    };
+
     // ── Suspicious artifacts ─────────────────────────────────────
     let artifacts: Vec<(&str, &str)> = changes
         .iter()
         .filter(|c| c.status != "D")
+        .filter(|c| !is_ignored(&c.path))
         .filter_map(|c| artifact_reason(&c.path).map(|r| (c.path.as_str(), r)))
         .collect();
     out.push_str(&section_header("⚠ ARTIFACTS", artifacts.len(), "likely should not be committed"));
@@ -55,7 +66,7 @@ pub fn run(against: Option<&str>, verbose: u8) -> Result<()> {
     // ── Stale markers (scan changed, non-deleted text files) ─────
     let mut stale_hits: Vec<String> = Vec::new();
     'scan: for c in &changes {
-        if c.status == "D" {
+        if c.status == "D" || is_ignored(&c.path) {
             continue;
         }
         let Ok(content) = std::fs::read_to_string(&c.path) else {

@@ -4,7 +4,7 @@
 //! entire repo. Exits non-zero when anything is found, so it can gate CI.
 
 use crate::core::changes;
-use crate::core::residue::{artifact_reason, scan_stale};
+use crate::core::residue::{artifact_reason, load_ignore, scan_stale};
 use crate::core::tracking;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -33,7 +33,7 @@ pub fn run(path: Option<&Path>, verbose: u8) -> Result<i32> {
 
     // Honor `.bdostaleignore` (gitignore-style globs) so files that legitimately
     // document residue — the rename ledger, CHANGELOG — aren't flagged forever.
-    let ignore = load_stale_ignore(&root);
+    let ignore = load_ignore(&root);
     let before = files.len();
     files.retain(|f| !ignore.matched(f, false).is_ignore());
     let ignored = before - files.len();
@@ -111,15 +111,6 @@ fn root_relative_prefix(root: &Path, p: &Path) -> Option<PathBuf> {
     let abs = std::fs::canonicalize(p).ok()?;
     let root_abs = std::fs::canonicalize(root).ok()?;
     abs.strip_prefix(&root_abs).ok().map(|r| r.to_path_buf())
-}
-
-/// Load `.bdostaleignore` (gitignore-style globs) from the repo root, if present.
-/// Absent or unparseable → an empty matcher (nothing ignored).
-fn load_stale_ignore(root: &Path) -> ignore::gitignore::Gitignore {
-    let mut b = ignore::gitignore::GitignoreBuilder::new(root);
-    let _ = b.add(root.join(".bdostaleignore")); // Some(err) on read failure — ignore
-    b.build()
-        .unwrap_or_else(|_| ignore::gitignore::Gitignore::empty())
 }
 
 fn section_header(title: &str, count: usize) -> String {
