@@ -601,6 +601,24 @@ pub fn after() -> u32 {
         assert!(!o.contains("a }"), "body elided: {o}");
     }
 
+    // A one-line fn whose body itself contains a nested `{ … }` still nets to
+    // delta 0; the signature (up to the first brace) must be what's collapsed,
+    // and a normal multi-line block's lone closing `}` must not spuriously emit.
+    #[test]
+    fn test_signatures_one_line_nested_braces() {
+        let src = "\
+pub fn guard(x: u32) -> u32 { if x > 0 { x } else { 0 } }
+pub struct Wrap {
+    pub inner: u32,
+}
+";
+        let o = signatures(src, &Language::Rust).unwrap();
+        assert!(o.contains("pub fn guard(x: u32) -> u32 { … }"), "nested braces: {o}");
+        assert!(o.contains("pub struct Wrap { … }"), "struct intact: {o}");
+        // The struct's closing `}` line must not turn into a stray ` { … }`.
+        assert_eq!(o.matches("{ … }").count(), 2, "exactly two collapsed blocks: {o}");
+    }
+
     // A top-level `const …; // comment` must not merge with the next decl: the
     // statement-ending `;` is detected on the code portion, ignoring the trailing
     // comment.
