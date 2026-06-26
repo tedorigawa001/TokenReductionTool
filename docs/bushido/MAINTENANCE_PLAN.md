@@ -216,8 +216,10 @@ bash scripts/check-test-presence.sh
 - **変更系コマンドが `.bdostaleignore` を尊重**: `bdo review` の ARTIFACTS / STALE MARKERS 走査に `stale` と同じ ignore を適用。`load_stale_ignore` を `core::residue::load_ignore` に集約して共有。CHANGED 一覧は従来どおり全変更ファイルを表示（ignore は flag 抑制のみ）。テスト追加（`residue::load_ignore`）。
 - **`bdo map` の一行空ボディ署名化**: `pub fn f() {}` / `impl T {}` など同一行で開閉する block（net brace delta 0）を `outline_braces` の collapse_all 経路で署名化。`pub fn f() { … }` として map に出るよう修正。テスト追加（`test_signatures_one_line_body_kept`）。
 
+### ✅ 追加実装済み（0.44.0）
+- **`bdo test --changed` の多言語化**: 変更セットを言語別にプランニングする `core::testplan` を新設。Rust→`cargo test -- <stems>`、Go→`go test <./pkg dirs>`（変更 `.go` の親パッケージ）、Python→`pytest <test files> [-k "<stems>"]`（テストは直接・ソースは `-k` 連動）、JS/TS→`package.json` から runner を判定し `vitest related --run` / `jest --findRelatedTests`。複数言語が混在すれば各々を順に実行し、最初の非ゼロ exit を返す。シェルに渡るパス/識別子は `shell_quote`/`quote_join` で個別クォートし、スペース入りパスでも引数が割れない。テスト追加（`testplan` ユニット9件 + 統合 `tests/test_changed_multilang.rs` 2件）。
+
 ### 新規候補（assistant の欲しい機能）
-- **`bdo test --changed` の多言語化**: 現状 Rust/cargo のみ。変更ファイルの拡張子で test runner を切替（`*.py`→pytest、`*.ts/tsx`→vitest/jest、`*.go`→go test）。
 - **`bdo ci`（統合ゲート）**: `bdo stale` + `bdo test --changed` + `bdo review` を 1 コマンドで実行し、単一 exit code を返す pre-merge/CI ゲート。
 - **`bdo stale` の docs↔impl コマンド名ズレ検出**: ドキュメント中の `bdo <cmd>` 参照のうち `bdo --help` に存在しないものを検出（元バックログの未実装分）。
 - **`.bdostaleignore` の行内サプレッション**: ファイル glob に加え、`# bdo-stale-ignore` 行内マーカーで 1 行単位の除外（文書化された残骸の局所許可）。

@@ -220,7 +220,8 @@ enum Commands {
 
     /// Run tests and show only failures
     Test {
-        /// Run only the tests related to the git change set (Rust: `cargo test -- <stems>`)
+        /// Run only the tests related to the git change set (Rust/Go/Python/JS,
+        /// auto-detected per changed file)
         #[arg(long)]
         changed: bool,
         /// With --changed, derive targets from the diff vs a git ref (e.g. origin/main)
@@ -1798,21 +1799,24 @@ fn run_cli() -> Result<i32> {
                 if !changes::in_git_repo() {
                     anyhow::bail!("bdo test --changed: not inside a git repository");
                 }
-                let targets = changes::rust_test_targets(&changes::changed_files(
-                    against.as_deref(),
-                    None,
-                )?);
-                if targets.is_empty() {
-                    println!("bdo test --changed: no Rust test targets in the change set");
+                let changeset = changes::changed_files(against.as_deref(), None)?;
+                let root = changes::repo_root().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let plan = core::testplan::plan_changed_tests(&changeset, &root);
+                if plan.is_empty() {
+                    println!("bdo test --changed: no test targets in the change set");
                     0
                 } else {
-                    let filters = targets.into_iter().collect::<Vec<_>>().join(" ");
-                    // Multiple libtest filters must follow `--`.
-                    let cmd = format!("cargo test -- {filters}");
-                    if cli.verbose > 0 {
-                        eprintln!("bdo test --changed: {cmd}");
+                    // Run each language's tests in turn; surface the first
+                    // non-zero exit so a later pass can't mask an earlier failure.
+                    let mut worst = 0;
+                    for tc in &plan {
+                        println!("bdo test --changed [{}]: {}", tc.lang, tc.cmd);
+                        let code = runner::run_test(&tc.cmd, cli.verbose)?;
+                        if code != 0 && worst == 0 {
+                            worst = code;
+                        }
                     }
-                    runner::run_test(&cmd, cli.verbose)?
+                    worst
                 }
             } else {
                 let cmd = command.join(" ");

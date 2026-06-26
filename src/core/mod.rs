@@ -13,6 +13,7 @@ pub mod stream;
 pub mod tee;
 pub mod telemetry;
 pub mod telemetry_cmd;
+pub mod testplan;
 pub mod toml_filter;
 pub mod tracking;
 pub mod truncate;
