@@ -114,6 +114,12 @@ fn build_shell_command(command: &str) -> Command {
     }
 }
 
+fn build_argv_command(program: &str, args: &[String]) -> Command {
+    let mut c = Command::new(program);
+    c.args(args);
+    c
+}
+
 /// Run a command and filter output to show only errors/warnings
 pub fn run_err(command: &str, verbose: u8) -> Result<i32> {
     if verbose > 0 {
@@ -141,6 +147,28 @@ pub fn run_test(command: &str, verbose: u8) -> Result<i32> {
         "test",
         command,
         move |raw| extract_test_summary(raw, &command_owned),
+        crate::core::runner::RunOptions::with_tee("test"),
+    )
+}
+
+/// Run tests via argv — no shell involved. Use this for programmatically
+/// derived commands (e.g. `bdo test --changed`'s per-language plan) whose
+/// arguments may embed untrusted data such as filenames: passing them straight
+/// to `Command::args` makes shell metacharacters (`$(...)`, backticks, `$IFS`)
+/// inert text rather than something a shell could interpret, so there is no
+/// quoting to get right or wrong. `display` is the human-readable form shown
+/// in logs/headers only — it is never parsed or executed.
+pub fn run_test_argv(program: &str, args: &[String], display: &str, verbose: u8) -> Result<i32> {
+    if verbose > 0 {
+        eprintln!("Running tests: {}", display);
+    }
+    let cmd = build_argv_command(program, args);
+    let display_owned = display.to_string();
+    crate::core::runner::run_filtered(
+        cmd,
+        "test",
+        display,
+        move |raw| extract_test_summary(raw, &display_owned),
         crate::core::runner::RunOptions::with_tee("test"),
     )
 }

@@ -1810,8 +1810,9 @@ fn run_cli() -> Result<i32> {
                     // non-zero exit so a later pass can't mask an earlier failure.
                     let mut worst = 0;
                     for tc in &plan {
-                        println!("bdo test --changed [{}]: {}", tc.lang, tc.cmd);
-                        let code = runner::run_test(&tc.cmd, cli.verbose)?;
+                        println!("bdo test --changed [{}]: {}", tc.lang, tc.display);
+                        let code =
+                            runner::run_test_argv(&tc.program, &tc.args, &tc.display, cli.verbose)?;
                         if code != 0 && worst == 0 {
                             worst = code;
                         }

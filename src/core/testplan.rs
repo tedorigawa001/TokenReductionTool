@@ -9,6 +9,14 @@
 //!
 //! Languages with no matching changes are omitted; an empty plan means there is
 //! nothing to test in the change set.
+//!
+//! Every value embedded here (filenames, stems, package dirs) originates from
+//! changed *paths*, which an attacker controls by naming a file. Commands are
+//! therefore run as argv (`Command::new(program).args(args)`), never through a
+//! shell — `args` is exec'd as-is, so there is no quoting step that could be
+//! gotten wrong and no shell metacharacter (`$(...)`, backticks, `$IFS`) is ever
+//! live. `display` strings are for human-readable logging only and are never
+//! parsed or executed.
 
 use crate::core::changes::{rust_test_targets, Change};
 use std::collections::BTreeSet;
@@ -18,8 +26,12 @@ use std::path::Path;
 pub struct TestCommand {
     /// Short language tag for display (`rust`, `go`, `python`, `js`).
     pub lang: &'static str,
-    /// The shell command to run.
-    pub cmd: String,
+    /// The program to exec directly (no shell).
+    pub program: String,
+    /// Arguments passed straight to `Command::args` — never shell-parsed.
+    pub args: Vec<String>,
+    /// Human-readable rendering of `program`/`args` for logs only.
+    pub display: String,
 }
 
 /// JS/TS source extensions that a `*.test.*` file may cover.
@@ -27,19 +39,19 @@ const JS_EXTS: &[&str] = &[
     ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs",
 ];
 
-/// Single-quote one argument so the shell keeps it intact even when the path or
-/// stem contains spaces or metacharacters — the commands here are run via
-/// `sh -c`, where a bare `join(" ")` would split such paths into extra args.
+/// Single-quote one value for the human-readable `display` string so paths or
+/// stems containing spaces still read as one token. This is cosmetic only —
+/// `args` (what actually gets exec'd) carries the raw, unquoted value.
 /// (`a b` → `'a b'`, `it's` → `'it'\''s'`.)
-fn shell_quote(s: &str) -> String {
+fn display_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Quote each item and join with spaces, ready to interpolate into a command.
-fn quote_join<I: IntoIterator<Item = String>>(items: I) -> String {
+/// Quote each item and join with spaces for display.
+fn display_join<'a, I: IntoIterator<Item = &'a String>>(items: I) -> String {
     items
         .into_iter()
-        .map(|s| shell_quote(&s))
+        .map(|s| display_quote(s))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -52,31 +64,49 @@ pub fn plan_changed_tests(changes: &[Change], root: &Path) -> Vec<TestCommand> {
     // Rust — inline test-module filters (`cargo test -- <stem>`).
     let rust = rust_test_targets(changes);
     if !rust.is_empty() {
-        let filters = quote_join(rust);
+        let mut args = vec!["test".to_string(), "--".to_string()];
+        args.extend(rust.iter().cloned());
+        let display = format!("cargo test -- {}", display_join(&rust));
         cmds.push(TestCommand {
             lang: "rust",
-            cmd: format!("cargo test -- {filters}"),
+            program: "cargo".to_string(),
+            args,
+            display,
         });
     }
 
     // Go — the unique parent packages of changed `.go` files.
     let go = go_test_packages(changes);
     if !go.is_empty() {
-        let pkgs = quote_join(go);
+        let mut args = vec!["test".to_string()];
+        args.extend(go.iter().cloned());
+        let display = format!("go test {}", display_join(&go));
         cmds.push(TestCommand {
             lang: "go",
-            cmd: format!("go test {pkgs}"),
+            program: "go".to_string(),
+            args,
+            display,
         });
     }
 
     // Python — changed tests run directly, source files via a `-k` stem filter.
-    if let Some(cmd) = python_test_cmd(changes) {
-        cmds.push(TestCommand { lang: "python", cmd });
+    if let Some((args, display)) = python_test_cmd(changes) {
+        cmds.push(TestCommand {
+            lang: "python",
+            program: "pytest".to_string(),
+            args,
+            display,
+        });
     }
 
     // JS/TS — the runner's "related tests" mode over changed files.
-    if let Some(cmd) = js_test_cmd(changes, root) {
-        cmds.push(TestCommand { lang: "js", cmd });
+    if let Some((program, args, display)) = js_test_cmd(changes, root) {
+        cmds.push(TestCommand {
+            lang: "js",
+            program,
+            args,
+            display,
+        });
     }
 
     cmds
@@ -101,8 +131,9 @@ pub fn go_test_packages(changes: &[Change]) -> BTreeSet<String> {
 
 /// A `pytest` invocation for changed `.py` files: changed test files run
 /// directly, and the stems of changed non-test source files become a `-k`
-/// filter so their related tests run too. `None` when no `.py` files changed.
-pub fn python_test_cmd(changes: &[Change]) -> Option<String> {
+/// filter so their related tests run too. Returns `(args, display)`; `None`
+/// when no `.py` files changed.
+pub fn python_test_cmd(changes: &[Change]) -> Option<(Vec<String>, String)> {
     let mut test_files: BTreeSet<String> = BTreeSet::new();
     let mut stems: BTreeSet<String> = BTreeSet::new();
     for c in changes {
@@ -127,22 +158,22 @@ pub fn python_test_cmd(changes: &[Change]) -> Option<String> {
     if test_files.is_empty() && stems.is_empty() {
         return None;
     }
-    let mut cmd = String::from("pytest");
+
+    let mut args: Vec<String> = test_files.iter().cloned().collect();
+    let mut display = String::from("pytest");
     for f in &test_files {
-        cmd.push(' ');
-        cmd.push_str(&shell_quote(f));
+        display.push(' ');
+        display.push_str(&display_quote(f));
     }
     if !stems.is_empty() {
-        // The `-k` value is one shell argument holding a pytest keyword
-        // expression (`a or b`). The stems come from changed *filenames*, which
-        // are attacker-controllable, and this runs via `sh -c` — so it must be
-        // single-quoted like every other path here. Double quotes would leave
-        // `$(...)`, backticks and `$IFS` live (command injection); single quotes
-        // neutralize them while preserving the spaces pytest needs.
+        // One argv element holding the whole pytest keyword expression
+        // (`a or b`) — pytest itself splits on `or`/`and`, no shell involved.
         let k = stems.into_iter().collect::<Vec<_>>().join(" or ");
-        cmd.push_str(&format!(" -k {}", shell_quote(&k)));
+        args.push("-k".to_string());
+        display.push_str(&format!(" -k {}", display_quote(&k)));
+        args.push(k);
     }
-    Some(cmd)
+    Some((args, display))
 }
 
 /// A test file by pytest's discovery conventions: `test_*.py`, `*_test.py`, or
@@ -155,9 +186,9 @@ fn is_python_test_file(path: &str) -> bool {
 }
 
 /// A `vitest related` / `jest --findRelatedTests` invocation over changed
-/// JS/TS files, using whichever runner the repo declares. `None` when no
-/// JS/TS files changed.
-pub fn js_test_cmd(changes: &[Change], root: &Path) -> Option<String> {
+/// JS/TS files, using whichever runner the repo declares. Returns
+/// `(program, args, display)`; `None` when no JS/TS files changed.
+pub fn js_test_cmd(changes: &[Change], root: &Path) -> Option<(String, Vec<String>, String)> {
     let mut files: BTreeSet<String> = BTreeSet::new();
     for c in changes {
         if c.status == "D" {
@@ -170,12 +201,20 @@ pub fn js_test_cmd(changes: &[Change], root: &Path) -> Option<String> {
     if files.is_empty() {
         return None;
     }
-    let joined = quote_join(files);
-    let cmd = match js_runner(root) {
-        JsRunner::Jest => format!("npx jest --findRelatedTests {joined}"),
-        JsRunner::Vitest => format!("npx vitest related --run {joined}"),
+    let (mut args, prefix) = match js_runner(root) {
+        JsRunner::Jest => (vec!["jest".to_string(), "--findRelatedTests".to_string()], "npx jest --findRelatedTests"),
+        JsRunner::Vitest => (
+            vec![
+                "vitest".to_string(),
+                "related".to_string(),
+                "--run".to_string(),
+            ],
+            "npx vitest related --run",
+        ),
     };
-    Some(cmd)
+    args.extend(files.iter().cloned());
+    let display = format!("{prefix} {}", display_join(&files));
+    Some(("npx".to_string(), args, display))
 }
 
 enum JsRunner {
@@ -233,26 +272,34 @@ mod tests {
             ch("M", "pkg/__init__.py"),    // generic stem → dropped
             ch("D", "pkg/gone.py"),        // deleted — skipped
         ];
-        let cmd = python_test_cmd(&changes).unwrap();
-        assert!(cmd.starts_with("pytest "));
-        assert!(cmd.contains("'tests/test_auth.py'"));
-        assert!(cmd.contains("-k 'service'"));
-        assert!(!cmd.contains("__init__"));
-        assert!(!cmd.contains("gone"));
+        let (args, display) = python_test_cmd(&changes).unwrap();
+        assert!(display.starts_with("pytest "));
+        assert!(display.contains("'tests/test_auth.py'"));
+        assert!(display.contains("-k 'service'"));
+        assert!(!display.contains("__init__"));
+        assert!(!display.contains("gone"));
+        // argv carries the raw (unquoted) values — no quoting needed off-shell.
+        assert!(args.contains(&"tests/test_auth.py".to_string()));
+        assert_eq!(args.last(), Some(&"service".to_string()));
+        assert!(args.iter().any(|a| a == "-k"));
     }
 
     #[test]
-    fn test_python_k_stem_is_shell_quoted_against_injection() {
-        // A malicious filename must not let `$(...)`/backticks/`$IFS` reach the
-        // shell through the `-k` argument. The whole keyword expression is
-        // single-quoted, so the substitution stays inert text.
+    fn test_python_k_stem_cannot_inject_because_no_shell_is_involved() {
+        // A malicious filename must not let `$(...)`/backticks/`$IFS` execute.
+        // With argv exec there is no shell to interpret them in the first
+        // place — the `-k` arg lands in pytest as inert literal text.
         let changes = vec![ch("M", "pkg/evil$(touch${IFS}pwned).py")];
-        let cmd = python_test_cmd(&changes).unwrap();
-        assert!(
-            cmd.contains("-k 'evil$(touch${IFS}pwned)'"),
-            "k stem not single-quoted: {cmd}"
+        let (args, display) = python_test_cmd(&changes).unwrap();
+        assert_eq!(
+            args.last(),
+            Some(&"evil$(touch${IFS}pwned)".to_string()),
+            "args: {args:?}"
         );
-        assert!(!cmd.contains("-k \""), "k must not use double quotes: {cmd}");
+        assert!(
+            display.contains("-k 'evil$(touch${IFS}pwned)'"),
+            "display not quoted: {display}"
+        );
     }
 
     #[test]
@@ -264,10 +311,13 @@ mod tests {
     fn test_js_defaults_to_vitest_related() {
         let dir = tempfile::tempdir().unwrap();
         let changes = vec![ch("M", "src/app.ts"), ch("D", "src/gone.ts")];
-        let cmd = js_test_cmd(&changes, dir.path()).unwrap();
-        assert!(cmd.starts_with("npx vitest related --run "));
-        assert!(cmd.contains("'src/app.ts'"));
-        assert!(!cmd.contains("gone"));
+        let (program, args, display) = js_test_cmd(&changes, dir.path()).unwrap();
+        assert_eq!(program, "npx");
+        assert_eq!(args[0], "vitest");
+        assert!(display.starts_with("npx vitest related --run "));
+        assert!(display.contains("'src/app.ts'"));
+        assert!(args.contains(&"src/app.ts".to_string()));
+        assert!(!display.contains("gone"));
     }
 
     #[test]
@@ -278,8 +328,10 @@ mod tests {
             r#"{ "devDependencies": { "jest": "^29.0.0" } }"#,
         )
         .unwrap();
-        let cmd = js_test_cmd(&[ch("M", "src/app.jsx")], dir.path()).unwrap();
-        assert!(cmd.starts_with("npx jest --findRelatedTests "));
+        let (program, args, display) = js_test_cmd(&[ch("M", "src/app.jsx")], dir.path()).unwrap();
+        assert_eq!(program, "npx");
+        assert_eq!(args[0], "jest");
+        assert!(display.starts_with("npx jest --findRelatedTests "));
     }
 
     #[test]
@@ -290,8 +342,8 @@ mod tests {
             r#"{ "devDependencies": { "jest": "^29", "vitest": "^1" } }"#,
         )
         .unwrap();
-        let cmd = js_test_cmd(&[ch("M", "a.ts")], dir.path()).unwrap();
-        assert!(cmd.contains("vitest related"));
+        let (_, _, display) = js_test_cmd(&[ch("M", "a.ts")], dir.path()).unwrap();
+        assert!(display.contains("vitest related"));
     }
 
     #[test]
@@ -306,14 +358,14 @@ mod tests {
         let plan = plan_changed_tests(&changes, dir.path());
         let langs: Vec<_> = plan.iter().map(|t| t.lang).collect();
         assert_eq!(langs, vec!["rust", "go", "python", "js"]);
-        assert!(plan[0].cmd.contains("cargo test -- 'outline'"));
-        assert!(plan[1].cmd.contains("go test './cmd/app'"));
-        assert!(plan[2].cmd.contains("pytest"));
-        assert!(plan[3].cmd.contains("vitest related"));
+        assert!(plan[0].display.contains("cargo test -- 'outline'"));
+        assert!(plan[1].display.contains("go test './cmd/app'"));
+        assert!(plan[2].display.contains("pytest"));
+        assert!(plan[3].display.contains("vitest related"));
     }
 
     #[test]
-    fn test_paths_with_spaces_are_shell_quoted() {
+    fn test_paths_with_spaces_are_shell_quoted_for_display() {
         let dir = tempfile::tempdir().unwrap();
         let changes = vec![
             ch("M", "cmd/my app/main.go"),
@@ -321,13 +373,22 @@ mod tests {
             ch("M", "tests/test my thing.py"),
         ];
         let plan = plan_changed_tests(&changes, dir.path());
-        let go = &plan.iter().find(|t| t.lang == "go").unwrap().cmd;
-        let js = &plan.iter().find(|t| t.lang == "js").unwrap().cmd;
-        let py = &plan.iter().find(|t| t.lang == "python").unwrap().cmd;
-        // Each space-bearing path is wrapped so the shell sees one argument.
-        assert!(go.contains("'./cmd/my app'"), "go: {go}");
-        assert!(js.contains("'web/my view.ts'"), "js: {js}");
-        assert!(py.contains("'tests/test my thing.py'"), "py: {py}");
+        let go = &plan.iter().find(|t| t.lang == "go").unwrap();
+        let js = &plan.iter().find(|t| t.lang == "js").unwrap();
+        let py = &plan.iter().find(|t| t.lang == "python").unwrap();
+        // Display wraps space-bearing paths so logs read as one token...
+        assert!(go.display.contains("'./cmd/my app'"), "go: {}", go.display);
+        assert!(js.display.contains("'web/my view.ts'"), "js: {}", js.display);
+        assert!(
+            py.display.contains("'tests/test my thing.py'"),
+            "py: {}",
+            py.display
+        );
+        // ...while argv carries the raw path as a single element, unquoted,
+        // since it's never re-split by a shell.
+        assert!(go.args.contains(&"./cmd/my app".to_string()));
+        assert!(js.args.contains(&"web/my view.ts".to_string()));
+        assert!(py.args.contains(&"tests/test my thing.py".to_string()));
     }
 
     #[test]
